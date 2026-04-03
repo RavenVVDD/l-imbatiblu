@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { LIVE_PHASES, initialLiveState, liveReducer } from './liveState';
+import { LIVE_PHASES, buildInitialShowState, initialLiveState, liveReducer } from './liveState';
 
 const gamePhases = [
   { id: 'lobby', title: 'Lobby', description: 'La partida esta lista para arrancar.' },
@@ -28,8 +28,10 @@ const IMBATIBLE_BONUS_POINTS = 4;
 const DUEL_DRAW_SPIN_MS = 8000;
 const DUEL_DRAW_ITEM_HEIGHT = 44;
 const DUEL_DRAW_VIEWPORT_HEIGHT = 244;
+const SHOW_READY_COUNTDOWN_SECONDS = 10;
+const WHEEL_SPIN_DURATION_MS = 5200;
 const APP_STORAGE_KEY = 'l-imbatiblu:persistent-state:v1';
-const HOST_SCREENS = new Set(['playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp']);
+const HOST_SCREENS = new Set(['playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp']);
 const SHOW_FLOW_STEPS = ['intro', 'standby', 'draw', 'rollers', 'versus', 'ready'];
 
 const initialPlayers = [
@@ -37,6 +39,85 @@ const initialPlayers = [
   { id: 'p2', playerNumber: 2, name: 'Lola', points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
   { id: 'p3', playerNumber: 3, name: 'Nico', points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
 ];
+
+const PLAYER_THEME_PALETTE = [
+  { id: 'j1', label: 'Brasa', accent: '#ff6a55', soft: 'rgba(255, 106, 85, 0.18)', ring: '#cf3f31', ink: '#fff8ef' },
+  { id: 'j2', label: 'Menta', accent: '#08b5aa', soft: 'rgba(8, 181, 170, 0.18)', ring: '#067f76', ink: '#fff8ef' },
+  { id: 'j3', label: 'Sol', accent: '#f5c84c', soft: 'rgba(245, 200, 76, 0.22)', ring: '#b58f12', ink: '#1f1a17' },
+  { id: 'j4', label: 'Uva', accent: '#8d68ff', soft: 'rgba(141, 104, 255, 0.18)', ring: '#5d44bf', ink: '#fff8ef' },
+  { id: 'j5', label: 'Cobre', accent: '#d98443', soft: 'rgba(217, 132, 67, 0.18)', ring: '#a95c28', ink: '#fff8ef' },
+  { id: 'j6', label: 'Rosa', accent: '#ff7fb2', soft: 'rgba(255, 127, 178, 0.18)', ring: '#c85384', ink: '#1f1a17' },
+  { id: 'j7', label: 'Lima', accent: '#8bd646', soft: 'rgba(139, 214, 70, 0.18)', ring: '#5f9f24', ink: '#1f1a17' },
+  { id: 'j8', label: 'Noche', accent: '#4d71ff', soft: 'rgba(77, 113, 255, 0.18)', ring: '#314fc2', ink: '#fff8ef' },
+  { id: 'j9', label: 'Coral', accent: '#ff8a6b', soft: 'rgba(255, 138, 107, 0.18)', ring: '#d15e45', ink: '#1f1a17' },
+  { id: 'j10', label: 'Aqua', accent: '#36c9c1', soft: 'rgba(54, 201, 193, 0.18)', ring: '#1b8f89', ink: '#1f1a17' },
+  { id: 'j11', label: 'Lavanda', accent: '#b79cff', soft: 'rgba(183, 156, 255, 0.18)', ring: '#8c6dde', ink: '#1f1a17' },
+  { id: 'j12', label: 'Tierra', accent: '#b96f52', soft: 'rgba(185, 111, 82, 0.18)', ring: '#8a4c34', ink: '#fff8ef' },
+  { id: 'j13', label: 'Verde', accent: '#5fca7b', soft: 'rgba(95, 202, 123, 0.18)', ring: '#368f51', ink: '#1f1a17' },
+  { id: 'j14', label: 'Aurora', accent: '#f7a23b', soft: 'rgba(247, 162, 59, 0.18)', ring: '#c77715', ink: '#1f1a17' },
+];
+
+function getPlayerThemeByNumber(playerNumber = 1) {
+  const index = Math.max(1, playerNumber) - 1;
+  return PLAYER_THEME_PALETTE[index % PLAYER_THEME_PALETTE.length];
+}
+
+function getPlayerThemeById(themeId, playerNumber = 1) {
+  return PLAYER_THEME_PALETTE.find((theme) => theme.id === themeId) ?? getPlayerThemeByNumber(playerNumber);
+}
+
+function getPlayerThemeStyle(player) {
+  const theme = getPlayerThemeById(player?.themeId, player?.playerNumber);
+  return {
+    '--player-theme-accent': theme.accent,
+    '--player-theme-soft': theme.soft,
+    '--player-theme-ring': theme.ring,
+    '--player-theme-ink': theme.ink,
+  };
+}
+
+function normalizeAccessCode(value) {
+  return value.replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+function hashAccessCodeSeed(seed) {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36).toUpperCase();
+}
+
+function buildPlayerAccessCode(player) {
+  const hash = hashAccessCodeSeed(`${player.id}:${player.name}:${player.playerNumber ?? 0}`);
+  const numeric = String((Number.parseInt(hash, 36) % 9000) + 1000).padStart(4, '0');
+  return numeric;
+}
+
+function createRandomAccessCode(existingCodes = []) {
+  const takenCodes = new Set(existingCodes.map((code) => normalizeAccessCode(String(code))));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = String(Math.floor(1000 + Math.random() * 9000));
+    if (!takenCodes.has(candidate)) return candidate;
+  }
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function normalizePlayerAccessCode(player) {
+  if (!player || typeof player !== 'object') return player;
+  const existingCode = typeof player.accessCode === 'string' ? player.accessCode.trim() : '';
+  const theme = getPlayerThemeById(player.themeId, player.playerNumber);
+  return {
+    ...player,
+    accessCode: existingCode ? existingCode.toUpperCase() : buildPlayerAccessCode(player),
+    themeId: theme.id,
+    themeLabel: theme.label,
+  };
+}
+
+function normalizePlayersCollection(players) {
+  return players.map((player) => normalizePlayerAccessCode(player));
+}
 
 const initialQuestions = [
   { id: 'q1', prompt: '¿En que ano se inauguro el Obelisco?', answer: '1936', theme: 'Historia', difficulty: 'Facil', used: false, approved: true },
@@ -67,36 +148,15 @@ const playFlowSteps = [
     buttonLabel: 'Abrir ruleta',
   },
   {
-    id: 'duelDraw',
-    kicker: '03',
-    title: 'Sorteo de duelo',
-    description: 'Hacé girar los dos rollers y dejá armada la pareja que va a jugar.',
-    buttonLabel: 'Abrir sorteo',
-  },
-  {
-    id: 'duelIntro',
-    kicker: '04',
-    title: 'Comienza el duelo',
-    description: 'Mostrá la presentación previa antes de pasar al host y al show.',
-    buttonLabel: 'Abrir intro',
-  },
-  {
     id: 'broadcast',
-    kicker: '05',
+    kicker: '03',
     title: 'Pantallas en vivo',
     description: 'Separá conductor, show y standby con la misma verdad de la partida.',
     buttonLabel: 'Abrir pantallas',
   },
   {
-    id: 'duelFinalize',
-    kicker: '06',
-    title: 'Finalización',
-    description: 'Cerrá el duelo y devolvé la vista a standby para el próximo cruce.',
-    buttonLabel: 'Cerrar duelo',
-  },
-  {
     id: 'final',
-    kicker: '07',
+    kicker: '04',
     title: 'Final',
     description: 'Revisá el ranking final con desempates y contendientes al cierre.',
     buttonLabel: 'Abrir final',
@@ -127,12 +187,54 @@ function writePersistedAppState(nextState) {
   }
 }
 
+function readPersistedSessionState() {
+  const persisted = readPersistedAppState();
+  const session = persisted?.session;
+  if (!session || typeof session !== 'object') return null;
+  if (session.role !== 'host' && session.role !== 'participant') return null;
+  return {
+    role: session.role,
+    screen: typeof session.screen === 'string' ? session.screen : 'menu',
+    broadcastView: typeof session.broadcastView === 'string' ? session.broadcastView : 'show',
+    hostUnlocked: Boolean(session.hostUnlocked),
+    participantPlayerId: typeof session.participantPlayerId === 'string' ? session.participantPlayerId : null,
+  };
+}
+
 function buildInitialPlayers() {
   const persisted = readPersistedAppState();
   if (Array.isArray(persisted?.players) && persisted.players.length) {
-    return persisted.players;
+    return normalizePlayersCollection(persisted.players);
   }
-  return initialPlayers;
+  return normalizePlayersCollection(initialPlayers);
+}
+
+function getInitialRole() {
+  return readPersistedSessionState()?.role ?? null;
+}
+
+function getInitialScreen() {
+  const session = readPersistedSessionState();
+  if (session?.role === 'participant') return 'participantLobby';
+  if (session?.role === 'host') return typeof session.screen === 'string' ? session.screen : 'menu';
+  return 'menu';
+}
+
+function getInitialBroadcastView() {
+  return readPersistedSessionState()?.broadcastView ?? 'show';
+}
+
+function getInitialHostUnlocked() {
+  const session = readPersistedSessionState();
+  if (session?.role === 'host') return session.hostUnlocked;
+  return !readPersistedAppState()?.hostPassword;
+}
+
+function getInitialParticipantIdentity() {
+  const session = readPersistedSessionState();
+  return session?.role === 'participant' && session.participantPlayerId
+    ? { id: session.participantPlayerId }
+    : null;
 }
 
 function buildInitialQuestions() {
@@ -172,6 +274,28 @@ function buildInitialPlayerSortDirection() {
   return persisted?.playerSortDirection === 'desc' ? 'desc' : 'asc';
 }
 
+function buildSharedAppState({
+  players,
+  questions,
+  nextPlayerNumber,
+  playerSortKey,
+  playerSortDirection,
+  rotationQueue,
+  duelSeats,
+  wheelThemes,
+}) {
+  return {
+    players,
+    questions,
+    nextPlayerNumber,
+    playerSortKey,
+    playerSortDirection,
+    rotationQueue,
+    duelSeats,
+    wheelThemes,
+  };
+}
+
 function gameReducer(state, action) {
   switch (action.type) {
     case 'NEXT_PHASE': {
@@ -198,28 +322,27 @@ function buildWheelGradient(items) {
 }
 
 function App() {
-  const [screen, setScreen] = useState('menu');
+  const [screen, setScreen] = useState(getInitialScreen);
+  const [appRole, setAppRole] = useState(getInitialRole);
+  const [entryStep, setEntryStep] = useState('chooser');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [hostAuthOpen, setHostAuthOpen] = useState(false);
   const [hostAccessTarget, setHostAccessTarget] = useState('playOptions');
   const [hostAuthAttempt, setHostAuthAttempt] = useState('');
   const [hostAuthError, setHostAuthError] = useState('');
+  const [entryHostPassword, setEntryHostPassword] = useState('');
+  const [entryParticipantPlayerId, setEntryParticipantPlayerId] = useState(() => initialPlayers[0]?.id ?? '');
+  const [entryParticipantCode, setEntryParticipantCode] = useState('');
+  const [entryParticipantError, setEntryParticipantError] = useState('');
+  const [participantIdentity, setParticipantIdentity] = useState(getInitialParticipantIdentity);
   const [hostPassword, setHostPassword] = useState(() => readPersistedAppState()?.hostPassword ?? '');
-  const [hostUnlocked, setHostUnlocked] = useState(() => !readPersistedAppState()?.hostPassword);
+  const [hostUnlocked, setHostUnlocked] = useState(getInitialHostUnlocked);
   const [hostPasswordCurrent, setHostPasswordCurrent] = useState('');
   const [hostPasswordDraft, setHostPasswordDraft] = useState(() => readPersistedAppState()?.hostPassword ?? '');
   const [hostPasswordConfirm, setHostPasswordConfirm] = useState(() => readPersistedAppState()?.hostPassword ?? '');
   const [hostSettingsMessage, setHostSettingsMessage] = useState('');
-  const [broadcastView, setBroadcastView] = useState('standby');
+  const [broadcastView, setBroadcastView] = useState(getInitialBroadcastView);
   const [playFlowStep, setPlayFlowStep] = useState(0);
-  const [showFlowStep, setShowFlowStep] = useState('intro');
-  const [showSpinnerActive, setShowSpinnerActive] = useState(false);
-  const [showSpinnerSelection, setShowSpinnerSelection] = useState(null);
-  const [showSpinnerOffsets, setShowSpinnerOffsets] = useState({ left: 0, right: 0 });
-  const [showDuelNames, setShowDuelNames] = useState({ left: 'Jugador X', right: 'Jugador Y' });
-  const [showDuelSelection, setShowDuelSelection] = useState({ leftId: null, rightId: null });
-  const [showReadyCountdown, setShowReadyCountdown] = useState(3);
-  const [showIntroExiting, setShowIntroExiting] = useState(false);
   const lastOutcomeSoundRef = useRef(0);
   const showLeftViewportRef = useRef(null);
   const showLeftTrackRef = useRef(null);
@@ -271,6 +394,7 @@ function App() {
   const [wheelResult, setWheelResult] = useState(null);
   const [pendingThemeIndex, setPendingThemeIndex] = useState(null);
   const wheelSpinFrameRef = useRef(null);
+  const wheelResolveTimeoutRef = useRef(null);
 
   const [duelDrawState, setDuelDrawState] = useState({
     spinning: false,
@@ -282,6 +406,7 @@ function App() {
   const duelDrawTimeoutRef = useRef(null);
   const showFlowTimeoutRef = useRef(null);
   const showReadyIntervalRef = useRef(null);
+  const showWheelResolveTimeoutRef = useRef(null);
 
   const [duelTimer, setDuelTimer] = useState({ label: 'Listo', seconds: 0, running: false, mode: 'idle' });
   const duelTimerRef = useRef(null);
@@ -292,11 +417,122 @@ function App() {
   const [liveAnswerDraft, setLiveAnswerDraft] = useState('1936');
   const [liveThemeDraft, setLiveThemeDraft] = useState('Historia');
   const liveSocketRef = useRef(null);
+  const liveStateRef = useRef(liveState);
   const hasLoadedInitialRotationRef = useRef(false);
+  const hasHydratedSharedStateRef = useRef(false);
+  const lastSharedStateHashRef = useRef('');
 
   const currentPhase = gamePhases[machine.phaseIndex];
   const liveCurrentPhase = LIVE_PHASES[liveState.phaseIndex];
+  const rawShowState = liveState.show ?? {};
+  const initialShowState = buildInitialShowState();
+  const showState = {
+    ...initialShowState,
+    ...rawShowState,
+    spinnerOffsets: {
+      ...initialShowState.spinnerOffsets,
+      ...(rawShowState.spinnerOffsets ?? {}),
+    },
+    duelNames: {
+      ...initialShowState.duelNames,
+      ...(rawShowState.duelNames ?? {}),
+    },
+    duelSelection: {
+      ...initialShowState.duelSelection,
+      ...(rawShowState.duelSelection ?? {}),
+    },
+    drawPool: Array.isArray(rawShowState.drawPool) ? rawShowState.drawPool : initialShowState.drawPool,
+  };
+  const showFlowStep = showState.flowStep;
+  const showSpinnerActive = showState.spinnerActive;
+  const showSpinnerSelection = showState.spinnerSelection;
+  const showSpinnerOffsets = showState.spinnerOffsets;
+  const showDuelNames = showState.duelNames;
+  const showDuelSelection = showState.duelSelection;
+  const showDrawPool = showState.drawPool;
+  const showReadyCountdown = showState.readyCountdown;
+  const showIntroExiting = showState.introExiting;
+  const showDuelLaunched = Boolean(showState.duelLaunched);
+  const showWheelRotation = typeof showState.wheelRotation === 'number' ? showState.wheelRotation : 0;
+  const showWheelResult = typeof showState.wheelResult === 'string' && showState.wheelResult.trim() ? showState.wheelResult : null;
+  const showWheelSpinning = Boolean(showState.wheelSpinning);
+  const patchShowState = (patch) => {
+    dispatchLiveAction({ type: 'SHOW_PATCH', patch });
+  };
+  const resolveNextValue = (current, next) => (typeof next === 'function' ? next(current) : next);
+  const getCurrentShowState = () => ({ ...buildInitialShowState(), ...(liveStateRef.current.show ?? {}) });
+  const setShowFlowStep = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ flowStep: resolveNextValue(currentShowState.flowStep, next) });
+  };
+  const setShowSpinnerActive = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ spinnerActive: resolveNextValue(currentShowState.spinnerActive, next) });
+  };
+  const setShowSpinnerSelection = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ spinnerSelection: resolveNextValue(currentShowState.spinnerSelection, next) });
+  };
+  const setShowSpinnerOffsets = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ spinnerOffsets: resolveNextValue(currentShowState.spinnerOffsets, next) });
+  };
+  const setShowDuelNames = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ duelNames: resolveNextValue(currentShowState.duelNames, next) });
+  };
+  const setShowDuelSelection = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ duelSelection: resolveNextValue(currentShowState.duelSelection, next) });
+  };
+  const setShowDrawPool = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ drawPool: resolveNextValue(currentShowState.drawPool, next) });
+  };
+  const setShowReadyCountdown = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ readyCountdown: resolveNextValue(currentShowState.readyCountdown, next) });
+  };
+  const setShowIntroExiting = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ introExiting: resolveNextValue(currentShowState.introExiting, next) });
+  };
+  const setShowWheelRotation = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ wheelRotation: resolveNextValue(currentShowState.wheelRotation, next) });
+  };
+  const setShowWheelResult = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ wheelResult: resolveNextValue(currentShowState.wheelResult, next) });
+  };
+  const setShowWheelSpinning = (next) => {
+    const currentShowState = getCurrentShowState();
+    patchShowState({ wheelSpinning: resolveNextValue(currentShowState.wheelSpinning, next) });
+  };
+  const resetShowPresentation = () => {
+    patchShowState({
+      ...buildInitialShowState(),
+      readyCountdown: SHOW_READY_COUNTDOWN_SECONDS,
+    });
+  };
+  const returnShowToStandby = () => {
+    patchShowState({
+      ...buildInitialShowState(),
+      flowStep: 'standby',
+      readyCountdown: SHOW_READY_COUNTDOWN_SECONDS,
+    });
+  };
   const wheelStep = 360 / wheelThemes.length;
+  const buildNextWheelSpin = (currentRotation) => {
+    const targetIndex = Math.floor(Math.random() * wheelThemes.length);
+    const currentNormalized = ((currentRotation % 360) + 360) % 360;
+    const targetNormalized = 360 - targetIndex * wheelStep - wheelStep / 2;
+    const extraTurns = 5 + Math.floor(Math.random() * 3);
+    return {
+      targetIndex,
+      nextRotation: currentRotation + (targetNormalized - currentNormalized + extraTurns * 360),
+    };
+  };
   const wheelBackground = useMemo(() => buildWheelGradient(wheelThemes), [wheelThemes]);
   const liveTurnSide = liveState.turnSide ?? 'playerA';
   const liveStealSide = liveTurnSide === 'playerA' ? 'playerB' : 'playerA';
@@ -305,9 +541,14 @@ function App() {
   const liveDuelWinnerName = liveState.duelWinnerSide ? liveState.teamNames[liveState.duelWinnerSide] : null;
   const liveResponderName = liveState.responderSide ? liveState.teamNames[liveState.responderSide] : null;
   const liveOutcomeName = liveState.responseOutcome?.side ? liveState.teamNames[liveState.responseOutcome.side] : null;
+  useEffect(() => {
+    liveStateRef.current = liveState;
+  }, [liveState]);
 
   const duelSeatPlayerA = players.find((player) => player.id === duelSeats.playerA) ?? null;
   const duelSeatPlayerB = players.find((player) => player.id === duelSeats.playerB) ?? null;
+  const duelSeatThemeA = getPlayerThemeById(duelSeatPlayerA?.themeId, duelSeatPlayerA?.playerNumber);
+  const duelSeatThemeB = getPlayerThemeById(duelSeatPlayerB?.themeId, duelSeatPlayerB?.playerNumber);
   const duelDrawBlockedPlayerId = duelSeatPlayerA?.winStreak > 0 ? duelSeatPlayerA.id : duelSeatPlayerB?.winStreak > 0 ? duelSeatPlayerB.id : null;
   const duelDrawEligiblePlayers = useMemo(() => {
     return players.filter((player) => player.active && !player.imbatible && player.id !== duelDrawBlockedPlayerId);
@@ -321,6 +562,27 @@ function App() {
 
   const activePlayers = players.filter((player) => player.active).length;
   const imbatibles = players.filter((player) => player.imbatible).length;
+  const currentParticipant = participantIdentity ? players.find((player) => player.id === participantIdentity.id) ?? participantIdentity : null;
+
+  useEffect(() => {
+    if (!players.length) return;
+    if (!players.some((player) => player.id === entryParticipantPlayerId)) {
+      setEntryParticipantPlayerId(players[0].id);
+    }
+  }, [entryParticipantPlayerId, players]);
+
+  useEffect(() => {
+    if (appRole !== 'participant') return;
+    if (!currentParticipant) {
+      setParticipantIdentity(null);
+      setAppRole(null);
+      setEntryStep('chooser');
+      setEntryParticipantCode('');
+      setEntryParticipantError('Ese participante ya no está disponible.');
+      window.history.replaceState({ screen: 'menu' }, '', '#menu');
+      setScreen('menu');
+    }
+  }, [appRole, currentParticipant]);
 
   const sortedPlayers = useMemo(() => {
     const direction = playerSortDirection === 'asc' ? 1 : -1;
@@ -348,14 +610,20 @@ function App() {
   const finalCutoffPoints = finalContenders.length ? finalContenders[finalContenders.length - 1].points : 0;
   const finalTiePlayers = finalRanking.filter((player) => player.points === finalCutoffPoints);
   const showEligiblePlayers = useMemo(() => players.filter((player) => player.active && !player.imbatible), [players]);
+  const showDrawEligiblePool = showDrawPool.length ? showDrawPool : showEligiblePlayers;
   const showDrawTrack = useMemo(() => {
-    if (!showEligiblePlayers.length) return [];
-    return Array.from({ length: 5 }, () => showEligiblePlayers).flat();
-  }, [showEligiblePlayers]);
-  const showSelectedPlayerLeft = showDuelSelection.leftId ? players.find((player) => player.id === showDuelSelection.leftId) ?? null : null;
-  const showSelectedPlayerRight = showDuelSelection.rightId ? players.find((player) => player.id === showDuelSelection.rightId) ?? null : null;
+    if (!showDrawEligiblePool.length) return [];
+    return Array.from({ length: 5 }, () => showDrawEligiblePool).flat();
+  }, [showDrawEligiblePool]);
+  const showSelectedPlayerLeft = showDuelSelection.leftId ? showDrawEligiblePool.find((player) => player.id === showDuelSelection.leftId) ?? players.find((player) => player.id === showDuelSelection.leftId) ?? null : null;
+  const showSelectedPlayerRight = showDuelSelection.rightId ? showDrawEligiblePool.find((player) => player.id === showDuelSelection.rightId) ?? players.find((player) => player.id === showDuelSelection.rightId) ?? null : null;
+  const showSelectedThemeLeft = getPlayerThemeById(showSelectedPlayerLeft?.themeId, showSelectedPlayerLeft?.playerNumber);
+  const showSelectedThemeRight = getPlayerThemeById(showSelectedPlayerRight?.themeId, showSelectedPlayerRight?.playerNumber);
+  const showDrawRevealReady = Boolean(!showSpinnerActive && showDuelSelection.leftId && showDuelSelection.rightId);
+  const formatPlayerNumber = (value) => `#${String(value ?? '?').padStart(2, '0')}`;
 
   const navigateToScreen = (nextScreen) => {
+    if (!isScreenAllowedForRole(nextScreen)) return;
     if (nextScreen === screen) return;
     window.history.pushState({ screen: nextScreen }, '', `#${nextScreen}`);
     setScreen(nextScreen);
@@ -363,6 +631,90 @@ function App() {
 
   const goBackScreen = () => {
     window.history.back();
+  };
+
+  const isScreenAllowedForRole = (nextScreen) => {
+    if (appRole === 'host') return true;
+    if (appRole === 'participant') return nextScreen === 'participantLobby';
+    return false;
+  };
+
+  const openRoleStep = (nextStep) => {
+    setEntryStep(nextStep);
+    setEntryParticipantError('');
+    setEntryHostPassword('');
+    setEntryParticipantCode('');
+    setHostAuthError('');
+  };
+
+  const logoutAccess = () => {
+    setAppRole(null);
+    setParticipantIdentity(null);
+    setEntryStep('chooser');
+    setEntryHostPassword('');
+    setEntryParticipantCode('');
+    setEntryParticipantError('');
+    setHostAuthAttempt('');
+    setHostAuthError('');
+    setHostAuthOpen(false);
+    setSettingsOpen(false);
+    window.history.replaceState({ screen: 'menu' }, '', '#menu');
+    setScreen('menu');
+  };
+
+  const grantHostAccess = () => {
+    setAppRole('host');
+    setHostUnlocked(true);
+    setHostAuthOpen(false);
+    setHostAuthError('');
+    setEntryStep('chooser');
+    setEntryHostPassword('');
+    setEntryParticipantCode('');
+    setEntryParticipantError('');
+    window.history.replaceState({ screen: 'menu' }, '', '#menu');
+    setScreen('menu');
+  };
+
+  const submitEntryHostPassword = () => {
+    const attempt = entryHostPassword.trim();
+    const requiredPassword = hostPassword.trim();
+
+    if (!requiredPassword || attempt === requiredPassword) {
+      grantHostAccess();
+      return;
+    }
+
+    setHostAuthError('Contraseña incorrecta');
+  };
+
+  const submitParticipantAccess = () => {
+    const selectedPlayer = players.find((player) => player.id === entryParticipantPlayerId) ?? null;
+    const attemptCode = normalizeAccessCode(entryParticipantCode);
+    const expectedCode = normalizeAccessCode(selectedPlayer?.accessCode ?? '');
+
+    if (!selectedPlayer) {
+      setEntryParticipantError('Elegí un participante.');
+      return;
+    }
+
+    if (!attemptCode) {
+      setEntryParticipantError('Ingresá tu código.');
+      return;
+    }
+
+    if (attemptCode !== expectedCode) {
+      setEntryParticipantError('Código incorrecto.');
+      return;
+    }
+
+    setParticipantIdentity(selectedPlayer);
+    setAppRole('participant');
+    setEntryStep('chooser');
+    setEntryParticipantError('');
+    setEntryParticipantCode('');
+    setEntryHostPassword('');
+    window.history.replaceState({ screen: 'participantLobby' }, '', '#participantLobby');
+    setScreen('participantLobby');
   };
 
   const requestHostAccess = (target) => {
@@ -376,13 +728,7 @@ function App() {
       if (target === 'settings') {
         setSettingsOpen(true);
       } else if (target === 'showMvp') {
-        setShowFlowStep('intro');
-        setShowSpinnerActive(false);
-        setShowSpinnerSelection(null);
-        setShowDuelSelection({ leftId: null, rightId: null });
-        setShowReadyCountdown(3);
-        setShowIntroExiting(false);
-        setShowDuelNames({ left: 'Jugador X', right: 'Jugador Y' });
+        resetShowPresentation();
         navigateToScreen('showMvp');
       } else {
         setPlayFlowStep(0);
@@ -395,13 +741,7 @@ function App() {
       if (target === 'settings') {
         setSettingsOpen(true);
       } else if (target === 'showMvp') {
-        setShowFlowStep('intro');
-        setShowSpinnerActive(false);
-        setShowSpinnerSelection(null);
-        setShowDuelSelection({ leftId: null, rightId: null });
-        setShowReadyCountdown(3);
-        setShowIntroExiting(false);
-        setShowDuelNames({ left: 'Jugador X', right: 'Jugador Y' });
+        resetShowPresentation();
         navigateToScreen('showMvp');
       } else {
         setPlayFlowStep(0);
@@ -433,13 +773,7 @@ function App() {
       if (target === 'settings') {
         setSettingsOpen(true);
       } else if (target === 'showMvp') {
-        setShowFlowStep('intro');
-        setShowSpinnerActive(false);
-        setShowSpinnerSelection(null);
-        setShowDuelSelection({ leftId: null, rightId: null });
-        setShowReadyCountdown(3);
-        setShowIntroExiting(false);
-        setShowDuelNames({ left: 'Jugador X', right: 'Jugador Y' });
+        resetShowPresentation();
         navigateToScreen('showMvp');
       } else {
         setPlayFlowStep(0);
@@ -527,7 +861,7 @@ function App() {
   }, [wheelThemes]);
   useEffect(() => {
     const initialHash = window.location.hash.replace('#', '');
-    const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors'].includes(initialHash)
+    const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp', 'competitors', 'participantLobby'].includes(initialHash)
       ? initialHash
       : 'menu';
     if (initialScreen !== screen) {
@@ -537,7 +871,7 @@ function App() {
 
     const handlePopState = (event) => {
       const nextScreen = event.state?.screen ?? (window.location.hash.replace('#', '') || 'menu');
-      if (['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors'].includes(nextScreen)) {
+      if (['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp', 'competitors', 'participantLobby'].includes(nextScreen)) {
         setScreen(nextScreen);
       }
     };
@@ -597,8 +931,38 @@ function App() {
       duelSeats,
       hostPassword,
       wheelThemes,
+      session: appRole ? {
+        role: appRole,
+        screen,
+        broadcastView,
+        hostUnlocked,
+        participantPlayerId: participantIdentity?.id ?? null,
+      } : null,
     });
-  }, [players, questions, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, hostPassword, wheelThemes]);
+  }, [appRole, broadcastView, duelSeats, hostPassword, hostUnlocked, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, questions, rotationQueue, screen, wheelThemes]);
+
+  useEffect(() => {
+    if (!hasHydratedSharedStateRef.current || !liveSocketRef.current) return;
+
+    const sharedAppState = buildSharedAppState({
+      players,
+      questions,
+      nextPlayerNumber,
+      playerSortKey,
+      playerSortDirection,
+      rotationQueue,
+      duelSeats,
+      wheelThemes,
+    });
+    const nextHash = JSON.stringify(sharedAppState);
+    if (nextHash === lastSharedStateHashRef.current) return;
+
+    lastSharedStateHashRef.current = nextHash;
+    liveSocketRef.current.emit('action', {
+      type: 'SYNC_APP_STATE',
+      payload: sharedAppState,
+    });
+  }, [players, questions, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, wheelThemes]);
 
   useEffect(() => {
     const serverUrl =
@@ -615,7 +979,27 @@ function App() {
     socket.on('connect', () => setLiveConnection('connected'));
     socket.on('disconnect', () => setLiveConnection('offline'));
     socket.on('connect_error', () => setLiveConnection('offline'));
-    socket.on('state', (state) => setLiveState(state));
+    socket.on('state', (state) => {
+      setLiveState(state);
+
+      const sharedAppState = state.sharedAppState;
+      if (sharedAppState) {
+        const nextHash = JSON.stringify(sharedAppState);
+        if (nextHash !== lastSharedStateHashRef.current) {
+          lastSharedStateHashRef.current = nextHash;
+          if (Array.isArray(sharedAppState.players)) setPlayers(normalizePlayersCollection(sharedAppState.players));
+          if (Array.isArray(sharedAppState.questions)) setQuestions(sharedAppState.questions);
+          if (typeof sharedAppState.nextPlayerNumber === 'number' && sharedAppState.nextPlayerNumber > 0) setNextPlayerNumber(sharedAppState.nextPlayerNumber);
+          if (['playerNumber', 'name', 'points'].includes(sharedAppState.playerSortKey)) setPlayerSortKey(sharedAppState.playerSortKey);
+          if (sharedAppState.playerSortDirection === 'desc' || sharedAppState.playerSortDirection === 'asc') setPlayerSortDirection(sharedAppState.playerSortDirection);
+          if (Array.isArray(sharedAppState.rotationQueue)) setRotationQueue(sharedAppState.rotationQueue);
+          if (sharedAppState.duelSeats && typeof sharedAppState.duelSeats === 'object') setDuelSeats(sharedAppState.duelSeats);
+          if (Array.isArray(sharedAppState.wheelThemes)) setWheelThemes(sharedAppState.wheelThemes);
+        }
+      }
+
+      hasHydratedSharedStateRef.current = true;
+    });
 
     return () => {
       socket.disconnect();
@@ -625,11 +1009,13 @@ function App() {
 
   useEffect(() => () => {
     if (wheelSpinFrameRef.current) window.cancelAnimationFrame(wheelSpinFrameRef.current);
+    if (wheelResolveTimeoutRef.current) window.clearTimeout(wheelResolveTimeoutRef.current);
     if (duelTimerRef.current) window.clearInterval(duelTimerRef.current);
     if (duelDrawTimeoutRef.current) window.clearTimeout(duelDrawTimeoutRef.current);
     if (showFlowTimeoutRef.current) window.clearTimeout(showFlowTimeoutRef.current);
     if (showReadyIntervalRef.current) window.clearInterval(showReadyIntervalRef.current);
     if (showDrawSettleTimeoutRef.current) window.clearTimeout(showDrawSettleTimeoutRef.current);
+    if (showWheelResolveTimeoutRef.current) window.clearTimeout(showWheelResolveTimeoutRef.current);
   }, []);
 
   useEffect(() => {
@@ -654,7 +1040,7 @@ function App() {
     }
 
     if (showFlowStep === 'ready') {
-      setShowReadyCountdown(3);
+      setShowReadyCountdown(SHOW_READY_COUNTDOWN_SECONDS);
       showReadyIntervalRef.current = window.setInterval(() => {
         setShowReadyCountdown((current) => {
           if (current <= 1) {
@@ -723,17 +1109,13 @@ function App() {
     }
 
     window.requestAnimationFrame(() => {
-      const leftAdjustment = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showDuelSelection.leftId);
-      const rightAdjustment = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showDuelSelection.rightId);
+      const leftAdjustment = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showDuelSelection.leftId, showDrawEligiblePool);
+      const rightAdjustment = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showDuelSelection.rightId, showDrawEligiblePool);
 
       setShowSpinnerOffsets((current) => ({
         left: current.left + (leftAdjustment ?? 0),
         right: current.right + (rightAdjustment ?? 0),
       }));
-
-      showDrawSettleTimeoutRef.current = window.setTimeout(() => {
-        setShowFlowStep('versus');
-      }, 120);
     });
 
     return () => {
@@ -742,7 +1124,7 @@ function App() {
         showDrawSettleTimeoutRef.current = null;
       }
     };
-  }, [screen, showFlowStep, showSpinnerActive, showDuelSelection.leftId, showDuelSelection.rightId]);
+  }, [screen, showFlowStep, showSpinnerActive, showDuelSelection.leftId, showDuelSelection.rightId, showDrawEligiblePool]);
 
   useEffect(() => {
     if (duelSeatPlayerA && duelSeatPlayerB) {
@@ -796,7 +1178,21 @@ function App() {
     const trimmed = playerName.trim();
     if (!trimmed) return;
     const newPlayerId = `p-${Date.now()}`;
-    setPlayers((current) => [...current, { id: newPlayerId, playerNumber: nextPlayerNumber, name: trimmed, points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false }]);
+    const theme = getPlayerThemeByNumber(nextPlayerNumber);
+    setPlayers((current) => [...current, {
+      id: newPlayerId,
+      playerNumber: nextPlayerNumber,
+      name: trimmed,
+      accessCode: createRandomAccessCode(current.map((player) => player.accessCode)),
+      themeId: theme.id,
+      themeLabel: theme.label,
+      points: 0,
+      roundsWon: 0,
+      stealsWon: 0,
+      winStreak: 0,
+      active: true,
+      imbatible: false,
+    }]);
     setRotationQueue((current) => [...current, newPlayerId]);
     if (!duelSeats.playerA) {
       setDuelSeats((current) => ({ ...current, playerA: newPlayerId }));
@@ -823,20 +1219,12 @@ function App() {
     return centerOffset - targetSlot * DUEL_DRAW_ITEM_HEIGHT;
   };
 
-  const buildShowDrawOffset = (playerId, poolSize) => {
-    const index = showEligiblePlayers.findIndex((player) => player.id === playerId);
-    if (index === -1) return 0;
-    const centerOffset = DUEL_DRAW_VIEWPORT_HEIGHT / 2 - DUEL_DRAW_ITEM_HEIGHT / 2;
-    const targetSlot = poolSize * 2 + index;
-    return centerOffset - targetSlot * DUEL_DRAW_ITEM_HEIGHT;
-  };
-
-  const snapShowRollerToSelection = (viewportElement, trackElement, playerId) => {
+  const snapShowRollerToSelection = (viewportElement, trackElement, playerId, pool = showDrawEligiblePool) => {
     if (!viewportElement || !trackElement) return null;
-    const selectedIndex = showEligiblePlayers.findIndex((player) => player.id === playerId);
+    const selectedIndex = pool.findIndex((player) => player.id === playerId);
     if (selectedIndex === -1) return null;
 
-    const targetSlot = showEligiblePlayers.length * 2 + selectedIndex;
+    const targetSlot = pool.length * 2 + selectedIndex;
     const targetItem = trackElement.children[targetSlot];
     if (!targetItem) return null;
 
@@ -961,23 +1349,20 @@ function App() {
     };
 
     const parseBlock = (block) => {
+      const normalizedBlock = block.replace(/\r/g, '\n');
+      const fieldPattern = /\b(tema|theme|pregunta|question|respuesta|answer|dificultad|difficulty|aprobada|approved|usada|used)\s*:/gi;
+      const matches = [...normalizedBlock.matchAll(fieldPattern)];
       const fields = {};
-      let currentKey = null;
 
-      block.split('\n').forEach((rawLine) => {
-        const line = rawLine.trim();
-        if (!line) return;
-
-        const match = line.match(/^(tema|theme|pregunta|question|respuesta|answer|dificultad|difficulty|aprobada|approved|usada|used)\s*:\s*(.*)$/i);
-        if (match) {
-          currentKey = match[1].toLowerCase();
-          fields[currentKey] = match[2].trim();
-          return;
-        }
-
-        if (currentKey) {
-          fields[currentKey] = `${fields[currentKey]}\n${line}`.trim();
-        }
+      matches.forEach((match, index) => {
+        const rawKey = match[1].toLowerCase();
+        const nextMatch = matches[index + 1];
+        const rawValue = normalizedBlock
+          .slice(match.index + match[0].length, nextMatch ? nextMatch.index : normalizedBlock.length)
+          .trim()
+          .replace(/\s*\n\s*/g, '\n')
+          .replace(/\s{2,}/g, ' ');
+        fields[rawKey] = rawValue;
       });
 
       const prompt = fields.pregunta ?? fields.question ?? '';
@@ -1037,89 +1422,56 @@ function App() {
     }, 1000);
   };
 
-  const startDuelDraw = () => {
-    if (duelDrawState.spinning) return;
-    if (duelDrawEligiblePlayers.length < 2) {
-      setDuelDrawState((current) => ({
-        ...current,
-        status: 'Necesitas al menos 2 jugadores aptos para el sorteo',
-        selection: null,
-      }));
-      return;
-    }
-
-    const firstPick = duelDrawEligiblePlayers[Math.floor(Math.random() * duelDrawEligiblePlayers.length)];
-    const remainingPlayers = duelDrawEligiblePlayers.filter((player) => player.id !== firstPick.id);
-    const secondPick = remainingPlayers[Math.floor(Math.random() * remainingPlayers.length)];
-
-    const leftOffset = buildDuelDrawOffset(firstPick.id, duelDrawEligiblePlayers.length);
-    const rightOffset = buildDuelDrawOffset(secondPick.id, duelDrawEligiblePlayers.length);
-
-    setDuelDrawState({
-      spinning: true,
-      status: 'GIRANDO...',
-      selection: {
-        playerAId: firstPick.id,
-        playerBId: secondPick.id,
-      },
-      leftOffset,
-      rightOffset,
-    });
-
-    if (duelDrawTimeoutRef.current) window.clearTimeout(duelDrawTimeoutRef.current);
-    duelDrawTimeoutRef.current = window.setTimeout(() => {
-      setDuelSeats({
-        playerA: firstPick.id,
-        playerB: secondPick.id,
-      });
-      setDuelDrawState({
-        spinning: false,
-        status: `${firstPick.name} vs ${secondPick.name}`,
-        selection: {
-          playerAId: firstPick.id,
-          playerBId: secondPick.id,
-        },
-        leftOffset,
-        rightOffset,
-      });
-    }, DUEL_DRAW_SPIN_MS);
-  };
-
   const startShowDuelDraw = () => {
     if (showSpinnerActive) return;
     if (showEligiblePlayers.length < 2) return;
 
-    const firstPick = showEligiblePlayers[Math.floor(Math.random() * showEligiblePlayers.length)];
-    const remainingPlayers = showEligiblePlayers.filter((player) => player.id !== firstPick.id);
+    const drawPool = showEligiblePlayers.map((player) => ({ ...player }));
+    const firstPick = drawPool[Math.floor(Math.random() * drawPool.length)];
+    const remainingPlayers = drawPool.filter((player) => player.id !== firstPick.id);
     const secondPick = remainingPlayers[Math.floor(Math.random() * remainingPlayers.length)];
-
-    const leftOffset = buildShowDrawOffset(firstPick.id, showEligiblePlayers.length);
-    const rightOffset = buildShowDrawOffset(secondPick.id, showEligiblePlayers.length);
 
     setShowFlowStep('draw');
     setShowSpinnerActive(true);
     showDrawNeedsSettleRef.current = false;
+    setShowDrawPool(drawPool);
     setShowSpinnerSelection({
       leftId: firstPick.id,
       rightId: secondPick.id,
     });
     setShowDuelSelection({
-      leftId: firstPick.id,
-      rightId: secondPick.id,
+      leftId: null,
+      rightId: null,
     });
+    setShowDuelNames({
+      left: '',
+      right: '',
+    });
+    patchShowState({ duelLaunched: false });
+    setShowWheelResult(null);
+    setShowWheelSpinning(false);
     setShowSpinnerOffsets({ left: 0, right: 0 });
 
     if (duelDrawTimeoutRef.current) window.clearTimeout(duelDrawTimeoutRef.current);
     if (showDrawSettleTimeoutRef.current) window.clearTimeout(showDrawSettleTimeoutRef.current);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        setShowSpinnerOffsets({ left: leftOffset, right: rightOffset });
+        const leftOffset = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, firstPick.id, drawPool);
+        const rightOffset = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, secondPick.id, drawPool);
+        setShowSpinnerOffsets({
+          left: leftOffset ?? 0,
+          right: rightOffset ?? 0,
+        });
       });
     });
     duelDrawTimeoutRef.current = window.setTimeout(() => {
       setDuelSeats({
         playerA: firstPick.id,
         playerB: secondPick.id,
+      });
+      setShowDuelSelection({
+        leftId: firstPick.id,
+        rightId: secondPick.id,
       });
       setShowDuelNames({ left: firstPick.name, right: secondPick.name });
       setShowSpinnerActive(false);
@@ -1127,8 +1479,53 @@ function App() {
     }, DUEL_DRAW_SPIN_MS);
   };
 
+  const startShowMirrorDraw = () => {
+    if (showFlowStep === 'intro' || showFlowStep === 'standby' || showFlowStep === 'draw') {
+      startShowDuelDraw();
+      return;
+    }
+    setShowFlowStep('standby');
+  };
+
   const continueFromShowVersus = () => {
+    patchShowState({ duelLaunched: false });
     setShowFlowStep('ready');
+  };
+
+  const advanceShowToThemeWheel = () => {
+    if (showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId) return;
+    patchShowState({
+      duelLaunched: false,
+      flowStep: 'theme',
+      wheelResult: null,
+      wheelSpinning: false,
+    });
+  };
+
+  const startBroadcastThemeSpin = () => {
+    if (showWheelSpinning || !wheelThemes.length) return;
+    const { targetIndex, nextRotation } = buildNextWheelSpin(showWheelRotation);
+    const selectedTheme = wheelThemes[targetIndex]?.label ?? 'Historia';
+
+    if (showWheelResolveTimeoutRef.current) {
+      window.clearTimeout(showWheelResolveTimeoutRef.current);
+      showWheelResolveTimeoutRef.current = null;
+    }
+
+    setShowWheelResult(null);
+    setShowWheelSpinning(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        setShowWheelRotation(nextRotation);
+      });
+    });
+
+    showWheelResolveTimeoutRef.current = window.setTimeout(() => {
+      setShowWheelSpinning(false);
+      setShowWheelResult(selectedTheme);
+      dispatchLiveAction({ type: 'SET_THEME', theme: selectedTheme });
+      showWheelResolveTimeoutRef.current = null;
+    }, WHEEL_SPIN_DURATION_MS + 80);
   };
 
   const startShowDuel = () => {
@@ -1138,30 +1535,8 @@ function App() {
         playerB: showDuelSelection.rightId,
       });
     }
+    patchShowState({ duelLaunched: true });
     setBroadcastView('show');
-    navigateToScreen('broadcast');
-  };
-
-  const applyDuelDrawSelection = () => {
-    if (!duelDrawState.selection) return;
-    setDuelSeats({
-      playerA: duelDrawState.selection.playerAId,
-      playerB: duelDrawState.selection.playerBId,
-    });
-    navigateToScreen('duelIntro');
-  };
-
-  const continueFromDuelIntro = () => {
-    setBroadcastView('conductor');
-    navigateToScreen('broadcast');
-  };
-
-  const openDuelFinalization = () => {
-    navigateToScreen('duelFinalize');
-  };
-
-  const returnToStandby = () => {
-    setBroadcastView('standby');
     navigateToScreen('broadcast');
   };
 
@@ -1189,12 +1564,12 @@ function App() {
       }
     }
 
+    setLiveState((current) => liveReducer(current, action));
+
     const socket = liveSocketRef.current;
     if (socket?.connected) {
       socket.emit('action', action);
-      return;
     }
-    setLiveState((current) => liveReducer(current, action));
   };
 
   const applyDuelResultAndRotate = () => {
@@ -1253,6 +1628,7 @@ function App() {
     setPlayers(nextPlayers);
     setRotationQueue(normalizedQueue);
     syncDuelSeats(normalizedQueue);
+    returnShowToStandby();
     dispatchLiveAction({ type: 'NEXT_DUEL' });
     if (normalizedQueue[0] && normalizedQueue[1]) {
       dispatchLiveAction({
@@ -1264,28 +1640,26 @@ function App() {
   };
 
   const startWheelSpin = () => {
-    if (wheelSpinning) return;
-    const targetIndex = Math.floor(Math.random() * wheelThemes.length);
-    const currentNormalized = ((wheelRotation % 360) + 360) % 360;
-    const targetNormalized = 360 - targetIndex * wheelStep - wheelStep / 2;
-    const extraTurns = 5 + Math.floor(Math.random() * 3);
-    const nextRotation = wheelRotation + (targetNormalized - currentNormalized + extraTurns * 360);
+    if (wheelSpinning || !wheelThemes.length) return;
+    const { targetIndex, nextRotation } = buildNextWheelSpin(wheelRotation);
+    const selectedTheme = wheelThemes[targetIndex]?.label ?? 'Historia';
     setWheelResult(null);
     setPendingThemeIndex(targetIndex);
     setWheelSpinning(true);
     if (wheelSpinFrameRef.current) window.cancelAnimationFrame(wheelSpinFrameRef.current);
+    if (wheelResolveTimeoutRef.current) window.clearTimeout(wheelResolveTimeoutRef.current);
     wheelSpinFrameRef.current = window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         setWheelRotation(nextRotation);
       });
     });
-  };
-
-  const handleWheelTransitionEnd = (event) => {
-    if (event.target !== event.currentTarget || event.propertyName !== 'transform' || pendingThemeIndex === null) return;
-    setWheelResult(wheelThemes[pendingThemeIndex].label);
-    setWheelSpinning(false);
-    setPendingThemeIndex(null);
+    wheelResolveTimeoutRef.current = window.setTimeout(() => {
+      setWheelResult(selectedTheme);
+      setWheelSpinning(false);
+      setPendingThemeIndex(null);
+      dispatchLiveAction({ type: 'SET_THEME', theme: selectedTheme });
+      wheelResolveTimeoutRef.current = null;
+    }, WHEEL_SPIN_DURATION_MS + 80);
   };
 
   const canCompetitorBuzz = (side) => {
@@ -1296,9 +1670,160 @@ function App() {
     return true;
   };
 
+  const renderAccessGate = () => (
+    <main className="app-shell access-shell">
+      <div className="grid-overlay" />
+      <div className="blob blob-one" />
+      <div className="blob blob-two" />
+      <div className="blob blob-three" />
+      <section className="hero-frame auth-frame">
+        <div className="auth-hero">
+          <p className="sponsor-line">ACCESO PRIVADO</p>
+          <h1 className="play-title">¿Qué sos?</h1>
+          <p className="auth-lead">Elegí tu perfil para abrir la sala correcta. El host entra con contraseña y cada participante entra con su propio código.</p>
+        </div>
+
+        {entryStep === 'chooser' ? (
+          <div className="auth-choice-grid">
+            <button className="auth-choice-card" type="button" onClick={() => openRoleStep('host')}>
+              <span className="show-badge">HOST</span>
+              <strong>Control total</strong>
+              <p>Accedé al tablero, los jugadores y las pantallas en vivo.</p>
+            </button>
+            <button className="auth-choice-card" type="button" onClick={() => openRoleStep('participant')}>
+              <span className="show-badge is-playerB">PARTICIPANTE</span>
+              <strong>Ingreso personal</strong>
+              <p>Elegí tu jugador, validá tu código y entrá a tu lobby.</p>
+            </button>
+          </div>
+        ) : null}
+
+        {entryStep === 'host' ? (
+          <div className="auth-form-shell">
+            <button className="back-button auth-back-button" type="button" onClick={() => openRoleStep('chooser')}>← Volver</button>
+            <div className="host-password-box">
+              <strong>Acceso de host</strong>
+              <p>Ingresá la contraseña para desbloquear la app completa.</p>
+              <input
+                className="players-input"
+                type="password"
+                value={entryHostPassword}
+                onChange={(event) => setEntryHostPassword(event.target.value)}
+                placeholder="Contraseña del host"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') submitEntryHostPassword();
+                }}
+              />
+              {hostAuthError ? <p className="bulk-import-feedback">{hostAuthError}</p> : null}
+            </div>
+            <button className="modal-cta" type="button" onClick={submitEntryHostPassword}>Entrar como host</button>
+          </div>
+        ) : null}
+
+        {entryStep === 'participant' ? (
+          <div className="auth-form-shell">
+            <button className="back-button auth-back-button" type="button" onClick={() => openRoleStep('chooser')}>← Volver</button>
+            <div className="host-password-box">
+              <strong>Acceso participante</strong>
+              <p>Elegí tu jugador y escribí el código que te dieron para entrar a tu vida dentro del juego.</p>
+              <label className="auth-field">
+                <span>¿Quién sos?</span>
+                <select
+                  className="players-input"
+                  value={entryParticipantPlayerId}
+                  onChange={(event) => {
+                    setEntryParticipantPlayerId(event.target.value);
+                    setEntryParticipantError('');
+                  }}
+                >
+                  {players.map((player) => (
+                    <option key={player.id} value={player.id}>
+                      #{String(player.playerNumber).padStart(2, '0')} {player.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="auth-field">
+                <span>Código</span>
+                <textarea
+                  className="players-input auth-code-input"
+                  rows={3}
+                  value={entryParticipantCode}
+                  onChange={(event) => {
+                    setEntryParticipantCode(event.target.value);
+                    setEntryParticipantError('');
+                  }}
+                  placeholder="Pegá tu código acá"
+                />
+              </label>
+              {entryParticipantError ? <p className="bulk-import-feedback">{entryParticipantError}</p> : null}
+            </div>
+            <button className="modal-cta" type="button" onClick={submitParticipantAccess}>Entrar como participante</button>
+          </div>
+        ) : null}
+
+        <div className="auth-footer">
+          <span>{players.length} participantes cargados</span>
+          <span>Servidor {liveConnection}</span>
+        </div>
+      </section>
+    </main>
+  );
+
+  const renderParticipantLobby = () => (
+    <section className="hero-frame participant-frame">
+      <div className="play-header">
+        <button className="back-button" type="button" onClick={logoutAccess}>Salir</button>
+        <div className="play-header-copy">
+          <p className="sponsor-line">LOBBY PARTICIPANTE</p>
+          <h1 className="play-title">Tu sala personal</h1>
+        </div>
+      </div>
+
+      <div className="players-summary">
+        <div className="summary-card" style={currentParticipant ? getPlayerThemeStyle(currentParticipant) : undefined}><span>Tu jugador</span><strong>{currentParticipant ? `#${String(currentParticipant.playerNumber).padStart(2, '0')}` : 'Sin validar'}</strong></div>
+        <div className="summary-card"><span>Código</span><strong>{currentParticipant?.accessCode ?? '---'}</strong></div>
+        <div className="summary-card"><span>Conexión</span><strong>{liveConnection}</strong></div>
+      </div>
+
+      <div className="participant-panel">
+        <section className="broadcast-card participant-status-card player-theme-surface" style={currentParticipant ? getPlayerThemeStyle(currentParticipant) : undefined}>
+          <h2>{currentParticipant?.name ?? 'Participante'}</h2>
+          <p>Tu teléfono quedó asociado a este jugador. Cuando el host dispare eventos, esta vista puede usarse para seguir tu estado sin tocar el tablero general.</p>
+          <div className="participant-code-box">
+            <span>Tu código</span>
+            <strong>{currentParticipant?.accessCode ?? '---'}</strong>
+          </div>
+          <div className="broadcast-note">
+            <strong>Sala:</strong>
+            <span> {liveState.message}</span>
+          </div>
+        </section>
+
+        <aside className="broadcast-card participant-roster-card">
+          <h2>Participantes</h2>
+          <p>Lista completa de la sala, con tu jugador resaltado.</p>
+          <div className="participant-roster">
+            {players.map((player) => (
+              <div className={`participant-roster-item player-theme-surface ${player.id === currentParticipant?.id ? 'is-self' : ''}`} key={player.id} style={getPlayerThemeStyle(player)}>
+                <div>
+                  <strong>#{String(player.playerNumber).padStart(2, '0')} {player.name}</strong>
+                </div>
+                <div className="participant-roster-meta">
+                  <span className={`player-badge ${player.active ? '' : 'muted'}`}>{player.active ? 'En juego' : 'Descalificado'}</span>
+                </div>
+                <span className="player-badge muted participant-roster-points">Puntos {player.points}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+
 
   const renderMenu = () => (
-    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLU</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => requestHostAccess('playOptions')}>HOSTEAR</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('showMvp')}>COMENZAR SHOW</button><button className="secondary-action" type="button" onClick={() => navigateToScreen('competitors')}>COMPETIDORES</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
+    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLU</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => requestHostAccess('playOptions')}>HOSTEAR</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('showMvp')}>COMENZAR SHOW</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
   );
 
   const renderPlayOptions = () => (
@@ -1349,13 +1874,6 @@ function App() {
 
   const renderShowMvp = () => (
     <section className="hero-frame show-mvp-frame">
-      <div className="play-header">
-        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
-        <div className="play-header-copy">
-          <p className="sponsor-line">COMENZAR SHOW</p>
-          <h1 className="play-title">Pantalla del publico</h1>
-        </div>
-      </div>
       {showFlowStep === 'intro' ? (
         <section className={`broadcast-card show-intro-stage ${showIntroExiting ? 'is-exiting' : ''}`}>
           <div className="show-intro-orb show-intro-orb-left" />
@@ -1389,11 +1907,11 @@ function App() {
       {showFlowStep === 'standby' ? (
         <>
           <div className="show-standing-hero">
-            <section className="broadcast-card show-standing-stage">
+            <section className="broadcast-card show-standing-stage player-theme-surface" style={finalWinner ? getPlayerThemeStyle(finalWinner) : undefined}>
               <div className="show-standing-head">
+                <h2>Tabla general</h2>
                 <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showEligiblePlayers.length < 2}>SORTEAR DUELO</button>
               </div>
-              <h2>Tabla general</h2>
               <p>Mientras se arma el próximo duelo, así queda la clasificación en vivo.</p>
               <div className="standby-summary">
                 <div className="summary-card"><span>Jugadores</span><strong>{players.length}</strong></div>
@@ -1402,7 +1920,7 @@ function App() {
               </div>
               <div className="show-standby-list">
                 {finalRanking.map((player, index) => (
-                  <article className={`show-standby-row ${index === 0 ? 'is-top' : ''}`} key={player.id}>
+                  <article className={`show-standby-row player-theme-surface ${index === 0 ? 'is-top' : ''}`} key={player.id} style={getPlayerThemeStyle(player)}>
                     <div className="show-standby-rank">
                       <span>#{String(index + 1).padStart(2, '0')}</span>
                       <strong>{player.name}</strong>
@@ -1428,17 +1946,16 @@ function App() {
       {showFlowStep === 'draw' ? (
         <section className="broadcast-card show-draw-stage">
           <div className="show-draw-split">
-            <div className="show-draw-side show-draw-side-left">
-              <div className="show-badge">EQUIPO CORAL</div>
+            <div className={`show-draw-side show-draw-side-left ${showDrawRevealReady && showSelectedPlayerLeft ? 'player-theme-surface' : ''}`} style={showDrawRevealReady && showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
               <h2>{showSpinnerActive ? 'Girando...' : showSelectedPlayerLeft?.name ?? 'Listo para salir'}</h2>
-              <p>{showSpinnerActive ? 'El lado coral está buscando a su protagonista.' : `Jugador #${String(showSelectedPlayerLeft?.playerNumber ?? '?').padStart(2, '0')}`}</p>
+              <p>{showSpinnerActive ? 'Buscando la dupla...' : `Jugador #${String(showSelectedPlayerLeft?.playerNumber ?? '?').padStart(2, '0')}`}</p>
               <div className="show-roller-shell">
                 <span className="show-roller-arrow" aria-hidden="true">➜</span>
-                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showLeftViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
+                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
                     {showDrawTrack.map((player, index) => (
-                      <div className={`show-roller-item ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-left-${player.id}-${index}`}>
+                      <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-left-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
                         <strong>{player.name}</strong>
                       </div>
@@ -1447,17 +1964,16 @@ function App() {
                 </div>
               </div>
             </div>
-            <div className="show-draw-side show-draw-side-right">
-              <div className="show-badge">EQUIPO TEAL</div>
+            <div className={`show-draw-side show-draw-side-right ${showDrawRevealReady && showSelectedPlayerRight ? 'player-theme-surface' : ''}`} style={showDrawRevealReady && showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
               <h2>{showSpinnerActive ? 'Girando...' : showSelectedPlayerRight?.name ?? 'Listo para salir'}</h2>
-              <p>{showSpinnerActive ? 'El lado teal está cerrando la dupla del duelo.' : `Jugador #${String(showSelectedPlayerRight?.playerNumber ?? '?').padStart(2, '0')}`}</p>
+              <p>{showSpinnerActive ? 'Buscando la dupla...' : `Jugador #${String(showSelectedPlayerRight?.playerNumber ?? '?').padStart(2, '0')}`}</p>
               <div className="show-roller-shell">
                 <span className="show-roller-arrow is-right" aria-hidden="true">➜</span>
-                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showRightViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
+                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
                     {showDrawTrack.map((player, index) => (
-                      <div className={`show-roller-item ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-right-${player.id}-${index}`}>
+                      <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-right-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
                         <strong>{player.name}</strong>
                       </div>
@@ -1470,13 +1986,55 @@ function App() {
           <div className="show-draw-footer">
             <span className="machine-chip">SORTEO EN PANTALLA</span>
             <strong>{showSpinnerActive ? 'Buscando la dupla...' : `${showDuelNames.left} vs ${showDuelNames.right}`}</strong>
-            <p>{showSpinnerActive ? 'Los dos tambores giran juntos hasta clavar una pareja distinta.' : 'La pareja quedó definida y pasa directo a la placa de versus.'}</p>
+            <p>{showSpinnerActive ? 'Los dos tambores giran juntos hasta clavar una pareja distinta.' : 'La pareja quedó definida y espera la decisión del host para volver al ranking o pasar a la ruleta.'}</p>
           </div>
           <div className="broadcast-actions">
             <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showSpinnerActive || showEligiblePlayers.length < 2}>
               {showSpinnerActive ? 'Girando...' : 'Comenzar sorteo'}
             </button>
-            <button className="secondary-action" type="button" onClick={() => setShowFlowStep('standby')} disabled={showSpinnerActive}>Volver al ranking</button>
+            <button className="secondary-action" type="button" onClick={returnShowToStandby} disabled={showSpinnerActive}>Volver al ranking</button>
+            <button className="secondary-action" type="button" onClick={advanceShowToThemeWheel} disabled={showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId}>Avanzar hacia la ruleta</button>
+          </div>
+        </section>
+      ) : null}
+
+      {showFlowStep === 'theme' ? (
+        <section className="broadcast-card show-theme-stage">
+          <div className="show-badge">RULETA</div>
+          <h2>Categoria del duelo</h2>
+          <p>La ruleta en vivo define qué tema se usará para las preguntas de este cruce.</p>
+          <div className="wheel-layout broadcast-wheel-layout">
+            <div className={`wheel-stage ${showWheelSpinning ? 'is-spinning' : ''}`}>
+              <div className="wheel-pointer" />
+              <div className="wheel-shadow" />
+              <div
+                className={`wheel-disk ${showWheelSpinning ? 'is-spinning' : ''}`}
+                style={{ transform: `rotate(${showWheelRotation}deg)` }}
+              >
+                <div className="wheel-core" style={{ background: wheelBackground }} />
+                {wheelThemes.map((theme, index) => {
+                  const angle = index * wheelStep + wheelStep / 2;
+                  return (
+                    <div
+                      key={`show-theme-${theme.label}-${index}`}
+                      className="wheel-label"
+                      style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }}
+                      aria-label={theme.label}
+                    >
+                      <span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span>
+                    </div>
+                  );
+                })}
+                <button className="wheel-center" type="button" onClick={startBroadcastThemeSpin} disabled={showWheelSpinning}>GO</button>
+              </div>
+            </div>
+            <div className="wheel-panel">
+              <div className="wheel-result-card">
+                <span className="wheel-result-label">Resultado</span>
+                <strong>{showWheelSpinning ? 'Girando...' : showWheelResult ?? liveState.currentTheme ?? 'Aun no giraste'}</strong>
+                <p>{showWheelSpinning ? 'La ruleta sigue girando. Esperá el cierre del disco.' : 'Tema activo para el duelo.'}</p>
+              </div>
+            </div>
           </div>
         </section>
       ) : null}
@@ -1484,13 +2042,11 @@ function App() {
       {showFlowStep === 'versus' ? (
         <section className="broadcast-card show-versus-stage">
           <div className="show-versus-hero">
-            <div className="show-versus-card show-versus-left">
-              <span>Jugador coral</span>
+            <div className="show-versus-card show-versus-left player-theme-surface" style={showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
               <strong>{showDuelNames.left}</strong>
             </div>
             <div className="show-versus-vs">VS</div>
-            <div className="show-versus-card show-versus-right">
-              <span>Jugador teal</span>
+            <div className="show-versus-card show-versus-right player-theme-surface" style={showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
               <strong>{showDuelNames.right}</strong>
             </div>
           </div>
@@ -1506,14 +2062,12 @@ function App() {
         <section className="broadcast-card show-ready-stage">
           <div className="show-badge">SALIDA</div>
           <h2>En sus puestos</h2>
-          <p>El duelo arranca en segundos. Todo está sincronizado para entrar al vivo con la dupla sorteada.</p>
+          <p>El duelo arranca en segundos.</p>
           <div className="show-ready-hero">
-            <div className="show-ready-card">
-              <span>Duelo</span>
+            <div className="show-ready-card player-theme-surface" style={showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
               <strong>{showDuelNames.left} vs {showDuelNames.right}</strong>
             </div>
-            <div className="show-ready-card">
-              <span>Cuenta regresiva</span>
+            <div className="show-ready-card player-theme-surface" style={showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
               <strong>{showReadyCountdown > 0 ? `${showReadyCountdown}s` : 'Al aire'}</strong>
             </div>
             <div className="show-ready-card">
@@ -1546,7 +2100,6 @@ function App() {
           <div
             className={`wheel-disk ${wheelSpinning ? 'is-spinning' : ''}`}
             style={{ transform: `rotate(${wheelRotation}deg)` }}
-            onTransitionEnd={handleWheelTransitionEnd}
           >
             <div className="wheel-core" style={{ background: wheelBackground }} />
             {wheelThemes.map((theme, index) => {
@@ -1636,22 +2189,32 @@ function App() {
           <div className="players-table-head">
             <span>#</span>
             <span>Jugador</span>
+            <span>Código</span>
             <span>Estado</span>
             <span>Puntos</span>
             <span>Acciones</span>
           </div>
           <div className="players-list">
             {sortedPlayers.map((player) => (
-              <article className={`player-row ${player.active ? '' : 'is-muted'} ${celebratingPlayerId === player.id ? 'is-celebrating' : ''}`} key={player.id}>
+              <article
+                className={`player-row player-theme-surface ${player.active ? '' : 'is-muted'} ${celebratingPlayerId === player.id ? 'is-celebrating' : ''}`}
+                key={player.id}
+                style={getPlayerThemeStyle(player)}
+              >
                 <div className="player-row-cell player-row-index">
                   <span className="player-index">#{String(player.playerNumber).padStart(2, '0')}</span>
                 </div>
                 <div className="player-row-cell player-row-name">
                   <strong>{player.name}</strong>
                   <div className="player-badges compact">
+                    <span className="player-badge theme">{player.themeLabel ?? getPlayerThemeById(player.themeId, player.playerNumber).label}</span>
                     {player.winStreak > 0 ? <span className="player-badge">Racha {player.winStreak}</span> : null}
                     {player.imbatible ? <span className="player-badge highlight">Imbatible</span> : null}
+                    <span className="player-badge muted player-code-pill">{player.accessCode ?? buildPlayerAccessCode(player)}</span>
                   </div>
+                </div>
+                <div className="player-row-cell player-row-code">
+                  <code>{player.accessCode ?? buildPlayerAccessCode(player)}</code>
                 </div>
                 <div className="player-row-cell">
                   <span className={`player-badge ${player.active ? '' : 'muted'}`}>{player.active ? 'En juego' : 'Descalificado'}</span>
@@ -1767,6 +2330,249 @@ function App() {
     </section>
   );
 
+  const renderBroadcastShowStage = (badgeLabel = 'SHOW EN VIVO') => (
+    <section className="broadcast-card broadcast-show-stage">
+        <div className="broadcast-card-head">
+          <span className="machine-chip">{badgeLabel}</span>
+          <span className="machine-chip secondary">{showFlowStep.toUpperCase()}</span>
+        </div>
+
+        {showFlowStep === 'intro' ? (
+          <>
+            <h2>L&apos;Imbatiblú ya está al aire</h2>
+            <p>Esta vista espeja el show, pero en formato de control: legible, vertical y sin comprimir la pantalla.</p>
+            <div className="broadcast-metrics">
+              <div><span>Jugadores</span><strong>{players.length}</strong></div>
+              <div><span>Activos</span><strong>{showEligiblePlayers.length}</strong></div>
+              <div><span>Duelo</span><strong>#{liveState.currentDuel}</strong></div>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'standby' ? (
+          <>
+            <div className="show-standing-head">
+              <h2>Tabla general</h2>
+            </div>
+            <div className="standby-summary">
+              <div className="summary-card"><span>Jugadores</span><strong>{players.length}</strong></div>
+              <div className="summary-card"><span>Activos</span><strong>{showEligiblePlayers.length}</strong></div>
+              <div className="summary-card"><span>Duelo</span><strong>#{liveState.currentDuel}</strong></div>
+            </div>
+            <div className="broadcast-show-list">
+              {finalRanking.map((player, index) => (
+                <article className={`show-standby-row player-theme-surface ${index === 0 ? 'is-top' : ''}`} key={`broadcast-show-${player.id}`} style={getPlayerThemeStyle(player)}>
+                  <div className="show-standby-rank">
+                    <span>#{String(index + 1).padStart(2, '0')}</span>
+                    <strong>{player.name}</strong>
+                  </div>
+                  <div className="show-standby-metrics">
+                    <div><span>Rondas</span><strong>{player.roundsWon}</strong></div>
+                    <div><span>Robos</span><strong>{player.stealsWon}</strong></div>
+                    <div><span>Puntos</span><strong>{player.points}</strong></div>
+                    <div><span>Jugador</span><strong>#{player.playerNumber}</strong></div>
+                  </div>
+                  <div className="show-standby-badges">
+                    {player.imbatible ? <span className="player-badge highlight">Imbatible</span> : <span className="player-badge muted">Normal</span>}
+                    <span className={`player-badge ${player.active ? '' : 'muted'}`}>{player.active ? 'En juego' : 'Descalificado'}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'draw' ? (
+          <>
+            <div className="broadcast-show-draw">
+              <article className={`broadcast-show-draw-side ${showDrawRevealReady && showSelectedPlayerLeft ? 'player-theme-surface' : ''}`} style={showDrawRevealReady && showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
+                <span>Jugador A</span>
+                <strong>{showSpinnerActive ? 'Girando...' : showSelectedPlayerLeft?.name ?? 'Esperando'}</strong>
+                <p>{showSpinnerActive ? 'Buscando la dupla...' : formatPlayerNumber(showSelectedPlayerLeft?.playerNumber)}</p>
+              </article>
+              <article className={`broadcast-show-draw-side ${showDrawRevealReady && showSelectedPlayerRight ? 'player-theme-surface' : ''}`} style={showDrawRevealReady && showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
+                <span>Jugador B</span>
+                <strong>{showSpinnerActive ? 'Girando...' : showSelectedPlayerRight?.name ?? 'Esperando'}</strong>
+                <p>{showSpinnerActive ? 'Buscando la dupla...' : formatPlayerNumber(showSelectedPlayerRight?.playerNumber)}</p>
+              </article>
+            </div>
+            <div className="broadcast-show-roller">
+              <div className="show-roller-shell">
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showLeftViewportRef}>
+                  <div className="show-roller-focus" aria-hidden="true" />
+                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
+                    {showDrawTrack.map((player, index) => (
+                      <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`broadcast-show-left-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
+                        <span>#{String(player.playerNumber).padStart(2, '0')}</span>
+                        <strong>{player.name}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="show-roller-shell">
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showRightViewportRef}>
+                  <div className="show-roller-focus" aria-hidden="true" />
+                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
+                    {showDrawTrack.map((player, index) => (
+                      <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`broadcast-show-right-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
+                        <span>#{String(player.playerNumber).padStart(2, '0')}</span>
+                        <strong>{player.name}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="broadcast-note">
+              <strong>{showSpinnerActive ? 'Buscando la dupla...' : `${showDuelNames.left} vs ${showDuelNames.right}`}</strong>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'theme' ? (
+          <>
+            <h2>Ruleta del duelo</h2>
+            <p>SHOW quedó en la ruleta y espera que el host fije el tema del cruce.</p>
+            <div className="wheel-layout broadcast-wheel-layout">
+              <div className={`wheel-stage ${showWheelSpinning ? 'is-spinning' : ''}`}>
+                <div className="wheel-pointer" />
+                <div className="wheel-shadow" />
+                <div
+                  className={`wheel-disk ${showWheelSpinning ? 'is-spinning' : ''}`}
+                  style={{ transform: `rotate(${showWheelRotation}deg)` }}
+                >
+                  <div className="wheel-core" style={{ background: wheelBackground }} />
+                  {wheelThemes.map((theme, index) => {
+                    const angle = index * wheelStep + wheelStep / 2;
+                    return (
+                      <div
+                        key={`broadcast-theme-${theme.label}-${index}`}
+                        className="wheel-label"
+                        style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }}
+                        aria-label={theme.label}
+                      >
+                        <span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span>
+                      </div>
+                    );
+                  })}
+                  <button className="wheel-center" type="button" onClick={startBroadcastThemeSpin} disabled={showWheelSpinning}>GO</button>
+                </div>
+              </div>
+              <div className="wheel-panel">
+                <div className="wheel-result-card">
+                  <span className="wheel-result-label">Categoria</span>
+                  <strong>{showWheelSpinning ? 'Girando...' : showWheelResult ?? liveState.currentTheme ?? 'Pendiente'}</strong>
+                  <p>El tema que salga acá queda fijado para las preguntas del duelo.</p>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'versus' ? (
+          <>
+            <div className="broadcast-show-versus">
+              <div className={`show-versus-card show-versus-left player-theme-surface`} style={showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
+                <span>Jugador A</span>
+                <strong>{showDuelNames.left}</strong>
+              </div>
+              <div className={`show-versus-card show-versus-right player-theme-surface`} style={showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
+                <span>Jugador B</span>
+                <strong>{showDuelNames.right}</strong>
+              </div>
+            </div>
+            <div className="broadcast-note">
+              <strong>Duelo #{liveState.currentDuel}</strong>
+              <span>La sala ya tiene cruce confirmado.</span>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'ready' ? (
+          <>
+            <div className="broadcast-show-ready">
+              <div className={`show-ready-card player-theme-surface`} style={showSelectedPlayerLeft ? getPlayerThemeStyle(showSelectedPlayerLeft) : undefined}>
+                <span>Duelo</span>
+                <strong>{showDuelNames.left} vs {showDuelNames.right}</strong>
+              </div>
+              <div className={`show-ready-card player-theme-surface`} style={showSelectedPlayerRight ? getPlayerThemeStyle(showSelectedPlayerRight) : undefined}>
+                <span>Cuenta regresiva</span>
+                <strong>{showReadyCountdown > 0 ? `${showReadyCountdown}s` : 'Al aire'}</strong>
+              </div>
+            </div>
+            <div className="broadcast-note">
+              <strong>{liveConnection === 'connected' ? 'Sincronizado' : 'Conectando'}</strong>
+              <span>El duelo arranca en segundos.</span>
+            </div>
+          </>
+        ) : null}
+      </section>
+  );
+
+  const renderBroadcastShowMirror = () => (
+    <div className="broadcast-grid broadcast-show-grid">
+      {renderBroadcastShowStage()}
+    </div>
+  );
+
+  const renderBroadcastShowHostActions = () => (
+    <section className="broadcast-card conductor-card">
+      <div className="broadcast-card-head">
+        <span className="machine-chip">HOST</span>
+        <span className="machine-chip secondary">CONTROL DE SHOW</span>
+      </div>
+      <h2>Acciones del host</h2>
+      <p>
+        Esta vista sigue el mismo estado que ve SHOW y solo habilita las decisiones que corresponden en esta etapa.
+      </p>
+      <div className="broadcast-metrics">
+        <div><span>Etapa</span><strong>{showFlowStep.toUpperCase()}</strong></div>
+        <div><span>Activos</span><strong>{showEligiblePlayers.length}</strong></div>
+        <div><span>Duelo</span><strong>#{liveState.currentDuel}</strong></div>
+        <div><span>Seleccion</span><strong>{showDuelSelection.leftId && showDuelSelection.rightId ? 'Lista' : 'Pendiente'}</strong></div>
+      </div>
+      <div className="broadcast-actions">
+        {showFlowStep === 'intro' ? (
+          <button className="primary-action" type="button" onClick={() => setShowFlowStep('standby')}>Ir al ranking</button>
+        ) : null}
+        {showFlowStep === 'standby' ? (
+          <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showEligiblePlayers.length < 2}>Sortear duelo</button>
+        ) : null}
+        {showFlowStep === 'draw' ? (
+          <>
+            <button className="primary-action" type="button" onClick={advanceShowToThemeWheel} disabled={showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId}>Avanzar hacia la ruleta</button>
+            <button className="secondary-action" type="button" onClick={returnShowToStandby} disabled={showSpinnerActive}>Volver al ranking</button>
+          </>
+        ) : null}
+        {showFlowStep === 'theme' ? (
+          <>
+            <button className="primary-action" type="button" onClick={startBroadcastThemeSpin} disabled={showWheelSpinning}>Girar ruleta</button>
+            <button className="secondary-action" type="button" onClick={startShowDuel} disabled={!showWheelResult}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
+          </>
+        ) : null}
+        {showFlowStep === 'versus' ? (
+          <>
+            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
+            <button className="secondary-action" type="button" onClick={continueFromShowVersus}>Ir a salida</button>
+          </>
+        ) : null}
+        {showFlowStep === 'ready' ? (
+          <>
+            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
+          </>
+        ) : null}
+      </div>
+      <div className="broadcast-note">
+        <strong>Estado:</strong>
+        <span> {showFlowStep === 'standby' ? 'SHOW esperando un nuevo sorteo.' : showFlowStep === 'draw' ? 'SHOW está definiendo la dupla en vivo.' : showFlowStep === 'theme' ? 'La ruleta va a fijar la categoría del duelo.' : showFlowStep === 'versus' ? 'La dupla ya quedó definida.' : showFlowStep === 'ready' ? 'El show quedó listo para lanzar el duelo.' : 'La apertura sigue al aire.'}</span>
+      </div>
+    </section>
+  );
+
   const renderBroadcast = () => (
     <section className="hero-frame broadcast-frame">
       <div className="match-header broadcast-header-minimal">
@@ -1775,7 +2581,6 @@ function App() {
       <div className="broadcast-tabs" role="tablist" aria-label="Vistas en vivo">
         <button className={`broadcast-tab ${broadcastView === 'conductor' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('conductor')}>Host</button>
         <button className={`broadcast-tab ${broadcastView === 'show' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('show')}>Show</button>
-        <button className={`broadcast-tab ${broadcastView === 'standby' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('standby')}>Standby</button>
       </div>
       <div className="broadcast-connection">
         <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
@@ -1783,62 +2588,23 @@ function App() {
         <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
       </div>
       {broadcastView === 'conductor' ? (
-        <div className="broadcast-grid">
-          <section className="broadcast-card conductor-card">
-            <div className="broadcast-card-head">
-              <span className="machine-chip">HOST</span>
-              <span className="machine-chip secondary">{liveState.questionVisible ? 'Pregunta al aire' : 'Pregunta oculta'}</span>
-            </div>
-            <h2>Admin de aire</h2>
-            <div className="live-editor">
-              <input className="players-input" type="text" value={liveThemeDraft} onChange={(event) => setLiveThemeDraft(event.target.value)} placeholder="Tema" />
-              <input className="players-input" type="text" value={liveQuestionDraft} onChange={(event) => setLiveQuestionDraft(event.target.value)} placeholder="Pregunta" />
-              <input className="players-input" type="text" value={liveAnswerDraft} onChange={(event) => setLiveAnswerDraft(event.target.value)} placeholder="Respuesta" />
-              <button className="primary-action" type="button" onClick={() => dispatchLiveAction({ type: 'SET_QUESTION', theme: liveThemeDraft.trim() || 'Historia', question: liveQuestionDraft.trim() || 'Pregunta sin cargar', answer: liveAnswerDraft.trim() || 'Respuesta pendiente', turnSide: liveTurnSide })}>Cargar pregunta oculta</button>
-            </div>
-            <div className="hidden-question">
-              <span className="hidden-label">Respuesta privada</span>
-              <strong>{liveState.answer}</strong>
-              <p>{liveResponderName ? `${liveResponderName} tiene la palabra.` : 'Solo la ve el host hasta resolver la jugada.'}</p>
-            </div>
-            <div className="broadcast-metrics">
-              <div><span>Tema</span><strong>{liveState.currentTheme}</strong></div>
-              <div><span>Fase</span><strong>{liveCurrentPhase.title}</strong></div>
-              <div><span>Reloj</span><strong>{String(liveState.timer.seconds).padStart(2, '0')}</strong></div>
-              <div><span>Buzz</span><strong>{liveResponderName ?? 'Esperando'}</strong></div>
-            </div>
-          </section>
-          <section className="broadcast-card conductor-card">
-            <div className="broadcast-card-head">
-              <span className="machine-chip secondary">ACCIONES</span>
-              <span className={`machine-chip secondary ${liveState.stealAvailable ? 'is-live-highlight' : ''}`}>{liveState.stealAvailable ? `ROBO ${liveStealName}` : 'ROBO CERRADO'}</span>
-            </div>
-            <h2>Control del duelo</h2>
-            <div className="broadcast-actions">
-              <button className="primary-action" type="button" onClick={() => dispatchLiveAction({ type: 'REVEAL_QUESTION' })} disabled={liveState.questionVisible}>Revelar pregunta</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'OPEN_STEAL_WINDOW', side: liveStealSide })} disabled={!liveState.stealAvailable}>Abrir robo</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_CORRECT', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta correcta</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta incorrecta</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_STEAL_CORRECT', side: liveState.responderSide ?? liveStealSide })} disabled={!liveState.stealAvailable || !liveState.responderSide}>Robo correcto</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_STEAL_WRONG', side: liveState.responderSide ?? liveStealSide })} disabled={!liveState.stealAvailable || !liveState.responderSide}>Robo incorrecto</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' })} disabled={!liveState.responseOutcome}>Limpiar overlay</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'TOGGLE_REVEAL' })}>Mostrar respuesta</button>
-              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'RESET_FLOW' })}>Reiniciar</button>
-              <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
-            </div>
-            <div className="broadcast-note"><strong>Estado:</strong><span> {liveState.message}</span></div>
-          </section>
-        </div>
-      ) : broadcastView === 'show' ? (
-        <div className="broadcast-grid show-grid show-grid-single">
-          <section className={`broadcast-card show-stage ${liveState.responderSide ? `is-${liveState.responderSide}` : ''}`}>
+        !showDuelLaunched ? (
+          <div className="broadcast-grid host-grid">
+            {renderBroadcastShowStage('ESPEJO SHOW')}
+            {renderBroadcastShowHostActions()}
+          </div>
+        ) : (
+        <div className="broadcast-grid host-grid">
+          <section className={`broadcast-card show-stage show-stage-compact ${liveState.responderSide ? `is-${liveState.responderSide}` : ''}`}>
             <div className="show-stage-topline">
               <span className="show-badge">DUELO #{liveState.currentDuel}</span>
               <span className="machine-chip secondary">{liveState.currentTheme}</span>
+              <span className="machine-chip secondary">{duelSeatThemeA.label}</span>
+              <span className="machine-chip secondary">{duelSeatThemeB.label}</span>
             </div>
             {!liveState.questionVisible ? (
               <div className="show-question-card is-hidden">
-                <span>L&apos;Imbatiblú</span>
+                <span>ESPEJO EN VIVO</span>
                 <strong>Pregunta oculta</strong>
                 <p>El host la revela cuando todo está listo.</p>
               </div>
@@ -1848,9 +2614,9 @@ function App() {
                 <strong>{liveState.question}</strong>
               </div>
             )}
-            <div className="show-scoreboard">
-              <div><span>{liveState.teamNames.playerA}</span><strong>{liveState.scoreboard.playerA}</strong></div>
-              <div><span>{liveState.teamNames.playerB}</span><strong>{liveState.scoreboard.playerB}</strong></div>
+              <div className="show-scoreboard">
+                <div className="player-theme-surface" style={getPlayerThemeStyle(duelSeatPlayerA ?? { playerNumber: 1, themeId: duelSeatThemeA.id })}><span>{duelSeatPlayerA?.name ?? 'Jugador 01'}</span><strong>{liveState.scoreboard.playerA}</strong></div>
+                <div className="player-theme-surface" style={getPlayerThemeStyle(duelSeatPlayerB ?? { playerNumber: 2, themeId: duelSeatThemeB.id })}><span>{duelSeatPlayerB?.name ?? 'Jugador 02'}</span><strong>{liveState.scoreboard.playerB}</strong></div>
               <div><span>Reloj</span><strong>{liveState.timer.running ? `${liveState.timer.seconds}s` : '—'}</strong></div>
             </div>
             {liveState.responderSide ? (
@@ -1880,47 +2646,52 @@ function App() {
               </div>
             ) : null}
           </section>
+          <section className="broadcast-card conductor-card">
+            <div className="broadcast-card-head">
+              <span className="machine-chip">HOST</span>
+              <span className="machine-chip secondary">{liveState.questionVisible ? 'Pregunta al aire' : 'Pregunta oculta'}</span>
+            </div>
+            <h2>Control del duelo</h2>
+            <div className="live-editor">
+              <input className="players-input" type="text" value={liveThemeDraft} onChange={(event) => setLiveThemeDraft(event.target.value)} placeholder="Tema" />
+              <input className="players-input" type="text" value={liveQuestionDraft} onChange={(event) => setLiveQuestionDraft(event.target.value)} placeholder="Pregunta" />
+              <input className="players-input" type="text" value={liveAnswerDraft} onChange={(event) => setLiveAnswerDraft(event.target.value)} placeholder="Respuesta" />
+              <button className="primary-action" type="button" onClick={() => dispatchLiveAction({ type: 'SET_QUESTION', theme: liveThemeDraft.trim() || 'Historia', question: liveQuestionDraft.trim() || 'Pregunta sin cargar', answer: liveAnswerDraft.trim() || 'Respuesta pendiente', turnSide: liveTurnSide })}>Cargar pregunta oculta</button>
+            </div>
+            <div className="hidden-question">
+              <span className="hidden-label">Respuesta privada</span>
+              <strong>{liveState.answer}</strong>
+              <p>{liveResponderName ? `${liveResponderName} tiene la palabra.` : 'Solo la ve el host hasta resolver la jugada.'}</p>
+            </div>
+            <div className="broadcast-metrics">
+              <div><span>Tema</span><strong>{liveState.currentTheme}</strong></div>
+              <div><span>Fase</span><strong>{liveCurrentPhase.title}</strong></div>
+              <div><span>Reloj</span><strong>{String(liveState.timer.seconds).padStart(2, '0')}</strong></div>
+              <div><span>Buzz</span><strong>{liveResponderName ?? 'Esperando'}</strong></div>
+            </div>
+            <div className="broadcast-card-head">
+              <span className="machine-chip secondary">ACCIONES</span>
+              <span className={`machine-chip secondary ${liveState.stealAvailable ? 'is-live-highlight' : ''}`}>{liveState.stealAvailable ? `ROBO ${liveStealName}` : 'ROBO CERRADO'}</span>
+            </div>
+            <div className="broadcast-actions">
+              <button className="primary-action" type="button" onClick={() => dispatchLiveAction({ type: 'REVEAL_QUESTION' })} disabled={liveState.questionVisible}>Revelar pregunta</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'OPEN_STEAL_WINDOW', side: liveStealSide })} disabled={!liveState.stealAvailable}>Abrir robo</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_CORRECT', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta correcta</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta incorrecta</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_STEAL_CORRECT', side: liveState.responderSide ?? liveStealSide })} disabled={!liveState.stealAvailable || !liveState.responderSide}>Robo correcto</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_STEAL_WRONG', side: liveState.responderSide ?? liveStealSide })} disabled={!liveState.stealAvailable || !liveState.responderSide}>Robo incorrecto</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' })} disabled={!liveState.responseOutcome}>Limpiar overlay</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'TOGGLE_REVEAL' })}>Mostrar respuesta</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'RESET_FLOW' })}>Reiniciar</button>
+              <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
+            </div>
+            <div className="broadcast-note"><strong>Estado:</strong><span> {liveState.message}</span></div>
+          </section>
         </div>
-      ) : (
-        <>
-          <div className="broadcast-grid standby-grid">
-            <section className="broadcast-card standby-stage">
-              <div className="show-badge">STANDBY</div>
-              <h2>Ranking en vivo</h2>
-              <p>Lista rankeada con las fuentes de verdad de la app: puntos, rondas ganadas, robos y estado Imbatible.</p>
-              <div className="standby-summary">
-                <div className="summary-card"><span>Jugadores</span><strong>{players.length}</strong></div>
-                <div className="summary-card"><span>Imbatibles</span><strong>{imbatibles}</strong></div>
-                <div className="summary-card"><span>Duelo</span><strong>#{liveState.currentDuel}</strong></div>
-              </div>
-              <div className="standby-list">
-                {finalRanking.map((player, index) => (
-                  <article className={`standby-row ${index === 0 ? 'is-top' : ''}`} key={player.id}>
-                    <div className="standby-rank">
-                      <span>#{String(index + 1).padStart(2, '0')}</span>
-                      <strong>{player.name}</strong>
-                    </div>
-                    <div className="standby-metrics">
-                      <div><span>Puntos</span><strong>{player.points}</strong></div>
-                      <div><span>Rondas</span><strong>{player.roundsWon}</strong></div>
-                      <div><span>Robos</span><strong>{player.stealsWon}</strong></div>
-                      <div><span>Jugador</span><strong>#{player.playerNumber}</strong></div>
-                    </div>
-                    <div className="standby-badges">
-                      {player.imbatible ? <span className="player-badge highlight">Imbatible</span> : <span className="player-badge muted">Activo</span>}
-                      {player.active ? <span className="player-badge">En rueda</span> : <span className="player-badge muted">Fuera</span>}
-                      <span className="player-badge">Racha {player.winStreak}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          </div>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={() => navigateToScreen('duelDraw')}>Comenzar sorteo de duelo</button>
-          </div>
-        </>
-      )}
+        )
+      ) : broadcastView === 'show' ? (
+        renderBroadcastShowMirror()
+      ) : null}
     </section>
   );
 
@@ -1966,16 +2737,19 @@ function App() {
           )}
         </div>
         <div className="competitor-actions-grid">
-          {['playerA', 'playerB'].map((side) => (
+          {[
+            { side: 'playerA', player: duelSeatPlayerA, fallbackTheme: duelSeatThemeA },
+            { side: 'playerB', player: duelSeatPlayerB, fallbackTheme: duelSeatThemeB },
+          ].map(({ side, player, fallbackTheme }) => (
             <button
               key={side}
-              className={`competitor-action-card ${side === 'playerA' ? 'is-playerA' : 'is-playerB'}`}
+              className="competitor-action-card player-theme-surface"
               type="button"
               onClick={() => dispatchLiveAction({ type: 'PLAYER_BUZZ_IN', side })}
               disabled={!canCompetitorBuzz(side)}
+              style={getPlayerThemeStyle(player ?? { playerNumber: side === 'playerA' ? 1 : 2, themeId: fallbackTheme.id })}
             >
-              <span>{side === 'playerA' ? 'Equipo coral' : 'Equipo teal'}</span>
-              <strong>{liveState.teamNames[side]}</strong>
+              <strong>{player?.name ?? (side === 'playerA' ? 'Jugador 01' : 'Jugador 02')}</strong>
               <em>{canCompetitorBuzz(side) ? 'RESPONDER' : liveState.responderSide === side ? 'TENÉS LA PALABRA' : 'ESPERA'}</em>
             </button>
           ))}
@@ -1983,145 +2757,6 @@ function App() {
       </section>
     </section>
   );
-
-  const renderDuelDraw = () => (
-    <section className="hero-frame duel-draw-frame">
-      <div className="play-header">
-        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
-        <div className="play-header-copy">
-          <p className="sponsor-line">SORTEO DE DUELO</p>
-          <h1 className="play-title">Roller vs roller</h1>
-        </div>
-      </div>
-
-      <div className="duel-draw-layout">
-        <section className="broadcast-card duel-draw-stage">
-          <div className="duel-draw-head">
-            <span className="machine-chip">DUELO</span>
-            <span className={`machine-chip ${duelDrawEligiblePlayers.length >= 2 ? 'secondary' : ''}`}>{duelDrawEligiblePlayers.length >= 2 ? 'Listo para sortear' : 'Faltan jugadores aptos'}</span>
-          </div>
-          <p>La app toma a los jugadores activos, saca a los Imbatibles y respeta la racha activa para no volver a meter al mismo que ya viene en juego.</p>
-          <div className="duel-draw-rollers">
-            {[{ side: 'A', offset: duelDrawState.leftOffset, player: duelDrawResultPlayerA }, { side: 'B', offset: duelDrawState.rightOffset, player: duelDrawResultPlayerB }].map((roller) => (
-              <div className="duel-roller" key={roller.side}>
-                <div className="duel-roller-label">ROLLER {roller.side}</div>
-                <div className={`duel-roller-viewport ${duelDrawState.spinning ? 'is-spinning' : ''}`}>
-                  <div className="duel-roller-marker" />
-                  <div className="duel-roller-track" style={{ transform: `translateY(${roller.offset}px)` }}>
-                    {duelDrawTrack.map((player, index) => (
-                      <div className={`duel-roller-item ${player.id === roller.player?.id ? 'is-selected' : ''}`} key={`${roller.side}-${player.id}-${index}`}>
-                        <span>#{String(player.playerNumber).padStart(2, '0')}</span>
-                        <strong>{player.name}</strong>
-                        {player.winStreak > 0 ? <em>Racha {player.winStreak}</em> : <em>Activo</em>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="duel-draw-result">
-            <span>Resultado</span>
-            <strong>{duelDrawState.selection && !duelDrawState.spinning ? `${duelDrawResultPlayerA?.name ?? 'Pendiente'} vs ${duelDrawResultPlayerB?.name ?? 'Pendiente'}` : duelDrawState.status}</strong>
-            <p>{duelDrawState.selection && !duelDrawState.spinning ? `J${duelDrawResultPlayerA?.playerNumber ?? '?'} vs J${duelDrawResultPlayerB?.playerNumber ?? '?'}` : 'Los dos tambores giran juntos hasta clavar una pareja distinta.'}</p>
-          </div>
-        </section>
-
-        <aside className="broadcast-card duel-draw-side">
-          <h2>Jugadores aptos</h2>
-          <p>{duelDrawEligiblePlayers.length ? 'Estos entran en el sorteo actual.' : 'No hay suficientes jugadores que cumplan las condiciones.'}</p>
-          <div className="show-side-list">
-            {duelDrawEligiblePlayers.slice(0, 6).map((player) => (
-              <div className="show-side-item" key={player.id}>
-                <span>#{String(player.playerNumber).padStart(2, '0')}</span>
-                <strong>{player.name}</strong>
-              </div>
-            ))}
-          </div>
-          {duelDrawBlockedPlayerId ? (
-            <div className="broadcast-note">
-              <strong>Racha activa:</strong>
-              <span> Se excluye al jugador que viene sosteniendo la seguidilla para que el sorteo no lo repita.</span>
-            </div>
-          ) : null}
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={startDuelDraw} disabled={duelDrawState.spinning || duelDrawEligiblePlayers.length < 2}>
-              {duelDrawState.spinning ? 'Girando...' : 'Comenzar sorteo'}
-            </button>
-            <button className="secondary-action" type="button" onClick={() => setDuelDrawState({ spinning: false, status: 'Listo para sortear', selection: null, leftOffset: 0, rightOffset: 0 })}>Limpiar</button>
-            <button className="secondary-action" type="button" onClick={applyDuelDrawSelection} disabled={!duelDrawState.selection || duelDrawState.spinning}>Continuar</button>
-            <button className="secondary-action" type="button" onClick={() => { if (duelDrawState.selection) { setDuelSeats({ playerA: duelDrawState.selection.playerAId, playerB: duelDrawState.selection.playerBId }); setBroadcastView('conductor'); navigateToScreen('broadcast'); } }} disabled={!duelDrawState.selection || duelDrawState.spinning}>Ir al host</button>
-          </div>
-        </aside>
-      </div>
-    </section>
-  );
-
-  const renderDuelIntro = () => {
-    const introPlayerA = duelSeatPlayerA;
-    const introPlayerB = duelSeatPlayerB;
-
-    return (
-      <section className="hero-frame duel-intro-frame">
-        <div className="duel-intro-stage">
-          <div className="duel-intro-pulse" />
-          <div className="show-badge">COMIENZA EL DUELO</div>
-          <h1>Que empiece el cruce</h1>
-          <p>
-            {introPlayerA?.name ?? 'Jugador A'} vs {introPlayerB?.name ?? 'Jugador B'}
-          </p>
-          <div className="duel-intro-versus">
-            <div className="duel-intro-card">
-              <span>J{introPlayerA?.playerNumber ?? '?'}</span>
-              <strong>{introPlayerA?.name ?? 'Pendiente'}</strong>
-            </div>
-            <div className="duel-intro-vs">VS</div>
-            <div className="duel-intro-card">
-              <span>J{introPlayerB?.playerNumber ?? '?'}</span>
-              <strong>{introPlayerB?.name ?? 'Pendiente'}</strong>
-            </div>
-          </div>
-          <div className="broadcast-actions duel-intro-actions">
-            <button className="primary-action" type="button" onClick={continueFromDuelIntro}>Continuar</button>
-            <button className="secondary-action" type="button" onClick={goBackScreen}>Volver</button>
-          </div>
-        </div>
-      </section>
-    );
-  };
-
-  const renderDuelFinalize = () => {
-    const introPlayerA = duelSeatPlayerA;
-    const introPlayerB = duelSeatPlayerB;
-
-    return (
-      <section className="hero-frame duel-intro-frame">
-        <div className="duel-intro-stage duel-finalize-stage">
-          <div className="duel-intro-pulse" />
-          <div className="show-badge">FINALIZACION DEL DUELO</div>
-          <h1>Cerramos esta ronda</h1>
-          <p>
-            {introPlayerA?.name ?? 'Jugador A'} vs {introPlayerB?.name ?? 'Jugador B'}
-          </p>
-          <div className="duel-intro-versus">
-            <div className="duel-intro-card">
-              <span>Salida</span>
-              <strong>Standby</strong>
-            </div>
-            <div className="duel-intro-vs">→</div>
-            <div className="duel-intro-card">
-              <span>Destino</span>
-              <strong>Vista en vivo</strong>
-            </div>
-          </div>
-          <div className="broadcast-actions duel-intro-actions">
-            <button className="primary-action" type="button" onClick={returnToStandby}>Volver a standby</button>
-            <button className="secondary-action" type="button" onClick={() => navigateToScreen('broadcast')}>Ir al vivo</button>
-          </div>
-        </div>
-      </section>
-    );
-  };
 
   const renderFinal = () => (
     <section className="hero-frame players-frame">
@@ -2135,20 +2770,24 @@ function App() {
       <div className="players-summary">
         <div className="summary-card"><span>Jugadores</span><strong>{players.length}</strong></div>
         <div className="summary-card"><span>Contendientes</span><strong>{finalContenders.length}</strong></div>
-        <div className="summary-card"><span>Lider</span><strong>{finalWinner?.name ?? 'Pendiente'}</strong></div>
+        <div className="summary-card" style={finalWinner ? getPlayerThemeStyle(finalWinner) : undefined}>
+          <span>Lider</span>
+          <strong>{finalWinner?.name ?? 'Pendiente'}</strong>
+        </div>
       </div>
       <div className="players-rule"><strong>Desempate:</strong><span>Primero puntos, luego rondas ganadas, despues robos correctos, estado Imbatible y por ultimo numero de jugador.</span></div>
       <div className="players-layout">
         <section className="players-panel">
           <div className="players-list">
             {finalRanking.map((player, index) => (
-              <article className={`player-card ${index === 0 ? 'is-celebrating' : ''}`} key={player.id}>
+              <article className={`player-card player-theme-surface ${index === 0 ? 'is-celebrating' : ''}`} key={player.id} style={getPlayerThemeStyle(player)}>
                 <div className="player-card-top">
                   <div>
                     <span className="player-index">#{String(index + 1).padStart(2, '0')}</span>
                     <h2>{player.name}</h2>
                   </div>
                   <div className="player-badges">
+                    <span className="player-badge theme">{player.themeLabel ?? getPlayerThemeById(player.themeId, player.playerNumber).label}</span>
                     {index === 0 ? <span className="player-badge highlight">Lider</span> : null}
                     {player.imbatible ? <span className="player-badge">Imbatible</span> : null}
                     <span className="player-badge muted">Racha {player.winStreak}</span>
@@ -2189,6 +2828,22 @@ function App() {
     <section className="hero-frame match-frame"><div className="match-header"><button className="back-button" type="button" onClick={goBackScreen}>← Volver</button><div className="match-header-copy"><p className="sponsor-line">MOTOR DE PARTIDA</p><h1 className="play-title">Estados del juego</h1></div></div><div className="machine-panel"><div className="machine-status"><span className="machine-chip">{machine.activeState}</span><span className="machine-chip secondary">Duelo {machine.currentDuel}</span></div><div className="machine-current"><h2>{currentPhase.title}</h2><p>{currentPhase.description}</p></div><div className="phase-stepper">{gamePhases.map((phase, index) => <button key={phase.id} type="button" className={`phase-step ${index === machine.phaseIndex ? 'is-active' : ''}`} onClick={() => dispatch({ type: 'GOTO_PHASE', index })}><span>{String(index + 1).padStart(2, '0')}</span><strong>{phase.title}</strong></button>)}</div><div className="machine-actions"><button className="secondary-action" type="button" onClick={() => dispatch({ type: 'PREV_PHASE' })}>Estado anterior</button><button className="primary-action" type="button" onClick={() => dispatch({ type: 'NEXT_PHASE' })}>Siguiente estado</button><button className="secondary-action" type="button" onClick={() => dispatch({ type: 'RESET_FLOW' })}>Reiniciar</button></div><div className="duel-timer-panel"><div className="duel-timer-head"><span className="wheel-result-label">Reloj de duelo</span><strong>{duelTimer.label}</strong></div><div className={`duel-timer-display ${duelTimer.running ? 'is-running' : ''}`}>{String(duelTimer.seconds).padStart(2, '0')}</div><div className="duel-timer-actions"><button className="secondary-action" type="button" onClick={() => startDuelTimer('response', 5, 'Respuesta')}>Respuesta 5s</button><button className="secondary-action" type="button" onClick={() => startDuelTimer('steal', 3, 'Robo')}>Robo 3s</button><button className="secondary-action" type="button" onClick={() => { clearDuelTimer(); setDuelTimer({ label: 'Listo', seconds: 0, running: false, mode: 'idle' }); }}>Reset reloj</button></div></div></div></section>
   );
 
+  if (!appRole) {
+    return renderAccessGate();
+  }
+
+  if (appRole === 'participant') {
+    return (
+      <main className="app-shell">
+        <div className="grid-overlay" />
+        <div className="blob blob-one" />
+        <div className="blob blob-two" />
+        <div className="blob blob-three" />
+        {renderParticipantLobby()}
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <div className="grid-overlay" />
@@ -2203,9 +2858,6 @@ function App() {
       {screen === 'questions' && renderQuestions()}
       {screen === 'broadcast' && renderBroadcast()}
       {screen === 'competitors' && renderCompetitors()}
-      {screen === 'duelDraw' && renderDuelDraw()}
-      {screen === 'duelIntro' && renderDuelIntro()}
-      {screen === 'duelFinalize' && renderDuelFinalize()}
       {screen === 'final' && renderFinal()}
       {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACION</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuracion">×</button></div><div className="settings-list"><div className="setting-row"><span>Duracion de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuacion</span><strong>Clasico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
       {wheelEditOpen ? (
@@ -2250,25 +2902,25 @@ function App() {
       {hostAuthOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setHostAuthOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="host-auth-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">HOST PROTEGIDO</p><h2 id="host-auth-title">Ingresar contraseña</h2></div><button className="icon-button" type="button" onClick={() => setHostAuthOpen(false)} aria-label="Cerrar acceso host">×</button></div><div className="host-password-box"><p>Ingresá la clave para abrir el panel de host o la proyección.</p><input className="players-input" type="password" value={hostAuthAttempt} onChange={(event) => setHostAuthAttempt(event.target.value)} placeholder="Contraseña del host" onKeyDown={(event) => { if (event.key === 'Enter') submitHostPassword(); }} />{hostAuthError ? <p className="bulk-import-feedback">{hostAuthError}</p> : null}</div><button className="modal-cta" type="button" onClick={submitHostPassword}>Entrar</button></div></div>) : null}
       {editQuestionOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setEditQuestionOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">EDITAR PREGUNTA</p><h2 id="edit-question-title">Modificar contenido</h2></div><button className="icon-button" type="button" onClick={() => setEditQuestionOpen(false)} aria-label="Cerrar editor">×</button></div><div className="bulk-import-body"><input className="players-input" type="text" value={editQuestionDraft.prompt} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="Pregunta" /><input className="players-input" type="text" value={editQuestionDraft.answer} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, answer: event.target.value }))} placeholder="Respuesta" /><div className="questions-filter-row"><select className="players-input" value={editQuestionDraft.theme} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, theme: event.target.value }))}>{questionCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select className="players-input" value={editQuestionDraft.difficulty} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, difficulty: event.target.value }))}><option value="Facil">Facil</option><option value="Media">Media</option><option value="Dificil">Dificil</option></select></div><div className="setting-row"><span>Usada</span><input type="checkbox" checked={editQuestionDraft.used} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, used: event.target.checked }))} /></div><div className="setting-row"><span>Aprobada</span><input type="checkbox" checked={editQuestionDraft.approved} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, approved: event.target.checked }))} /></div><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={saveEditQuestion}>Guardar cambios</button><button className="secondary-action" type="button" onClick={() => setEditQuestionOpen(false)}>Cancelar</button></div></div></div></div>) : null}
       {bulkImportOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setBulkImportOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CARGA MASIVA</p><h2 id="bulk-import-title">Pegar preguntas en bloque</h2></div><button className="icon-button" type="button" onClick={() => setBulkImportOpen(false)} aria-label="Cerrar carga masiva">×</button></div><div className="bulk-import-body"><div className="bulk-import-spec"><strong>Formato esperado</strong><code>TEMA: Historia
-DIFICULTAD: Facil
-PREGUNTA: ¿En que ano se inauguro el Obelisco?
-RESPUESTA: 1936
-APROBADA: si
-USADA: no
-
----
-</code></div><textarea className="bulk-import-textarea" value={bulkImportText} onChange={(event) => setBulkImportText(event.target.value)} placeholder={`TEMA: Historia
-DIFICULTAD: Facil
-PREGUNTA: ¿En que ano se inauguro el Obelisco?
-RESPUESTA: 1936
-APROBADA: si
-USADA: no
-
----
-TEMA: Deportes
-DIFICULTAD: Media
-PREGUNTA: ¿Cuantos jugadores hay por equipo en cancha?
-RESPUESTA: 11`} /><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={runBulkImport}>Importar preguntas</button><button className="secondary-action" type="button" onClick={() => { setBulkImportText(''); setBulkImportFeedback(''); }}>Limpiar</button></div>{bulkImportFeedback ? <p className="bulk-import-feedback">{bulkImportFeedback}</p> : null}</div></div></div>) : null}
+ DIFICULTAD: Facil
+ PREGUNTA: ¿En que ano se inauguro el Obelisco?
+ RESPUESTA: 1936
+ APROBADA: si
+ USADA: no
+ 
+ ---
+ </code></div><textarea className="bulk-import-textarea" value={bulkImportText} onChange={(event) => setBulkImportText(event.target.value)} placeholder={`TEMA: Historia
+ DIFICULTAD: Facil
+ PREGUNTA: ¿En que ano se inauguro el Obelisco?
+ RESPUESTA: 1936
+ APROBADA: si
+ USADA: no
+ 
+ ---
+ TEMA: Deportes
+ DIFICULTAD: Media
+ PREGUNTA: ¿Cuantos jugadores hay por equipo en cancha?
+ RESPUESTA: 11`} /><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={runBulkImport}>Importar preguntas</button><button className="secondary-action" type="button" onClick={() => { setBulkImportText(''); setBulkImportFeedback(''); }}>Limpiar</button></div>{bulkImportFeedback ? <p className="bulk-import-feedback">{bulkImportFeedback}</p> : null}</div></div></div>) : null}
     </main>
   );
 }
