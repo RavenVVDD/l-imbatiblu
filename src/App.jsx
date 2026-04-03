@@ -13,7 +13,7 @@ const gamePhases = [
   { id: 'final', title: 'Final', description: 'Los mejores por puntaje pasan a la final.' },
 ];
 
-const wheelThemes = [
+const initialWheelThemes = [
   { label: 'Historia', emoji: '🏛️' },
   { label: 'Deportes', emoji: '⚽' },
   { label: 'Cine', emoji: '🎬' },
@@ -143,6 +143,17 @@ function buildInitialQuestions() {
   return initialQuestions;
 }
 
+function buildInitialWheelThemes() {
+  const persisted = readPersistedAppState();
+  if (Array.isArray(persisted?.wheelThemes) && persisted.wheelThemes.length) {
+    return persisted.wheelThemes.map((theme, index) => ({
+      label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
+      emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji : initialWheelThemes[index]?.emoji ?? '🎯',
+    }));
+  }
+  return initialWheelThemes;
+}
+
 function buildInitialPlayerNumber() {
   const persisted = readPersistedAppState();
   if (typeof persisted?.nextPlayerNumber === 'number' && persisted.nextPlayerNumber > 0) {
@@ -210,6 +221,12 @@ function App() {
   const [showReadyCountdown, setShowReadyCountdown] = useState(3);
   const [showIntroExiting, setShowIntroExiting] = useState(false);
   const lastOutcomeSoundRef = useRef(0);
+  const showLeftViewportRef = useRef(null);
+  const showLeftTrackRef = useRef(null);
+  const showRightViewportRef = useRef(null);
+  const showRightTrackRef = useRef(null);
+  const showDrawSettleTimeoutRef = useRef(null);
+  const showDrawNeedsSettleRef = useRef(false);
 
   const [players, setPlayers] = useState(buildInitialPlayers);
   const [playerName, setPlayerName] = useState('');
@@ -221,6 +238,7 @@ function App() {
   const [duelSeats, setDuelSeats] = useState(() => ({ playerA: initialPlayers[0]?.id ?? null, playerB: initialPlayers[1]?.id ?? null }));
 
   const [questions, setQuestions] = useState(buildInitialQuestions);
+  const [wheelThemes, setWheelThemes] = useState(buildInitialWheelThemes);
   const [questionPrompt, setQuestionPrompt] = useState('');
   const [questionAnswer, setQuestionAnswer] = useState('');
   const [questionTheme, setQuestionTheme] = useState('Historia');
@@ -235,6 +253,8 @@ function App() {
   const [bulkImportFeedback, setBulkImportFeedback] = useState('');
   const [editQuestionOpen, setEditQuestionOpen] = useState(false);
   const [editQuestionId, setEditQuestionId] = useState(null);
+  const [wheelEditOpen, setWheelEditOpen] = useState(false);
+  const [wheelEditDraft, setWheelEditDraft] = useState([]);
   const [editQuestionDraft, setEditQuestionDraft] = useState({
     prompt: '',
     answer: '',
@@ -277,7 +297,7 @@ function App() {
   const currentPhase = gamePhases[machine.phaseIndex];
   const liveCurrentPhase = LIVE_PHASES[liveState.phaseIndex];
   const wheelStep = 360 / wheelThemes.length;
-  const wheelBackground = useMemo(() => buildWheelGradient(wheelThemes), []);
+  const wheelBackground = useMemo(() => buildWheelGradient(wheelThemes), [wheelThemes]);
   const liveTurnSide = liveState.turnSide ?? 'playerA';
   const liveStealSide = liveTurnSide === 'playerA' ? 'playerB' : 'playerA';
   const liveTurnName = liveState.teamNames[liveTurnSide];
@@ -454,6 +474,16 @@ function App() {
     setSettingsOpen(false);
   };
 
+  const saveWheelThemes = () => {
+    const nextThemes = wheelEditDraft.map((theme, index) => ({
+      label: theme.label.trim() || initialWheelThemes[index]?.label || `Tema ${index + 1}`,
+      emoji: theme.emoji.trim() || initialWheelThemes[index]?.emoji || '🎯',
+    }));
+
+    setWheelThemes(nextThemes);
+    setWheelEditOpen(false);
+  };
+
   const filteredQuestions = useMemo(() => {
     const direction = questionSortDirection === 'asc' ? 1 : -1;
     const searchTerm = questionFilterText.trim().toLowerCase();
@@ -491,6 +521,10 @@ function App() {
     const categories = new Set([...wheelThemes.map((theme) => theme.label), ...questions.map((question) => question.theme), questionTheme].filter(Boolean));
     return [...categories];
   }, [questions, questionTheme]);
+
+  useEffect(() => {
+    setWheelEditDraft(wheelThemes.map((theme) => ({ ...theme })));
+  }, [wheelThemes]);
   useEffect(() => {
     const initialHash = window.location.hash.replace('#', '');
     const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors'].includes(initialHash)
@@ -562,8 +596,9 @@ function App() {
       rotationQueue,
       duelSeats,
       hostPassword,
+      wheelThemes,
     });
-  }, [players, questions, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, hostPassword]);
+  }, [players, questions, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, hostPassword, wheelThemes]);
 
   useEffect(() => {
     const serverUrl =
@@ -594,6 +629,7 @@ function App() {
     if (duelDrawTimeoutRef.current) window.clearTimeout(duelDrawTimeoutRef.current);
     if (showFlowTimeoutRef.current) window.clearTimeout(showFlowTimeoutRef.current);
     if (showReadyIntervalRef.current) window.clearInterval(showReadyIntervalRef.current);
+    if (showDrawSettleTimeoutRef.current) window.clearTimeout(showDrawSettleTimeoutRef.current);
   }, []);
 
   useEffect(() => {
@@ -673,6 +709,40 @@ function App() {
       }
     };
   }, [screen, showFlowStep, showReadyCountdown]);
+
+  useEffect(() => {
+    if (screen !== 'showMvp' || showFlowStep !== 'draw' || showSpinnerActive) return undefined;
+    if (!showDrawNeedsSettleRef.current) return undefined;
+    if (!showDuelSelection.leftId || !showDuelSelection.rightId) return undefined;
+
+    showDrawNeedsSettleRef.current = false;
+
+    if (showDrawSettleTimeoutRef.current) {
+      window.clearTimeout(showDrawSettleTimeoutRef.current);
+      showDrawSettleTimeoutRef.current = null;
+    }
+
+    window.requestAnimationFrame(() => {
+      const leftAdjustment = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showDuelSelection.leftId);
+      const rightAdjustment = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showDuelSelection.rightId);
+
+      setShowSpinnerOffsets((current) => ({
+        left: current.left + (leftAdjustment ?? 0),
+        right: current.right + (rightAdjustment ?? 0),
+      }));
+
+      showDrawSettleTimeoutRef.current = window.setTimeout(() => {
+        setShowFlowStep('versus');
+      }, 120);
+    });
+
+    return () => {
+      if (showDrawSettleTimeoutRef.current) {
+        window.clearTimeout(showDrawSettleTimeoutRef.current);
+        showDrawSettleTimeoutRef.current = null;
+      }
+    };
+  }, [screen, showFlowStep, showSpinnerActive, showDuelSelection.leftId, showDuelSelection.rightId]);
 
   useEffect(() => {
     if (duelSeatPlayerA && duelSeatPlayerB) {
@@ -759,6 +829,20 @@ function App() {
     const centerOffset = DUEL_DRAW_VIEWPORT_HEIGHT / 2 - DUEL_DRAW_ITEM_HEIGHT / 2;
     const targetSlot = poolSize * 2 + index;
     return centerOffset - targetSlot * DUEL_DRAW_ITEM_HEIGHT;
+  };
+
+  const snapShowRollerToSelection = (viewportElement, trackElement, playerId) => {
+    if (!viewportElement || !trackElement) return null;
+    const selectedIndex = showEligiblePlayers.findIndex((player) => player.id === playerId);
+    if (selectedIndex === -1) return null;
+
+    const targetSlot = showEligiblePlayers.length * 2 + selectedIndex;
+    const targetItem = trackElement.children[targetSlot];
+    if (!targetItem) return null;
+
+    const viewportRect = viewportElement.getBoundingClientRect();
+    const targetRect = targetItem.getBoundingClientRect();
+    return (viewportRect.top + viewportRect.height / 2) - (targetRect.top + targetRect.height / 2);
   };
 
   const rebuildRotationQueue = (nextPlayers, previousQueue = rotationQueue) => {
@@ -1014,6 +1098,7 @@ function App() {
 
     setShowFlowStep('draw');
     setShowSpinnerActive(true);
+    showDrawNeedsSettleRef.current = false;
     setShowSpinnerSelection({
       leftId: firstPick.id,
       rightId: secondPick.id,
@@ -1025,6 +1110,7 @@ function App() {
     setShowSpinnerOffsets({ left: 0, right: 0 });
 
     if (duelDrawTimeoutRef.current) window.clearTimeout(duelDrawTimeoutRef.current);
+    if (showDrawSettleTimeoutRef.current) window.clearTimeout(showDrawSettleTimeoutRef.current);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         setShowSpinnerOffsets({ left: leftOffset, right: rightOffset });
@@ -1037,7 +1123,7 @@ function App() {
       });
       setShowDuelNames({ left: firstPick.name, right: secondPick.name });
       setShowSpinnerActive(false);
-      setShowFlowStep('versus');
+      showDrawNeedsSettleRef.current = true;
     }, DUEL_DRAW_SPIN_MS);
   };
 
@@ -1210,8 +1296,9 @@ function App() {
     return true;
   };
 
+
   const renderMenu = () => (
-    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLU</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => requestHostAccess('playOptions')}>HOSTEAR</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('showMvp')}>COMENZAR SHOW</button><button className="secondary-action" type="button" onClick={() => navigateToScreen('competitors')}>COMPETIDORES</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('settings')}>Configuracion</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
+    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLU</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => requestHostAccess('playOptions')}>HOSTEAR</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('showMvp')}>COMENZAR SHOW</button><button className="secondary-action" type="button" onClick={() => navigateToScreen('competitors')}>COMPETIDORES</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
   );
 
   const renderPlayOptions = () => (
@@ -1222,7 +1309,7 @@ function App() {
           <p className="sponsor-line">JUGAR HOST</p>
           <h1 className="play-title">Preparación en pasos</h1>
         </div>
-        <button className="secondary-action host-settings-launch" type="button" onClick={() => setSettingsOpen(true)}>Seguridad</button>
+        <button className="secondary-action host-settings-launch" type="button" onClick={() => setSettingsOpen(true)}>Configuracion del host</button>
       </div>
       <div className="play-flow-shell">
         <div className="play-flow-progress">
@@ -1345,14 +1432,18 @@ function App() {
               <div className="show-badge">EQUIPO CORAL</div>
               <h2>{showSpinnerActive ? 'Girando...' : showSelectedPlayerLeft?.name ?? 'Listo para salir'}</h2>
               <p>{showSpinnerActive ? 'El lado coral está buscando a su protagonista.' : `Jugador #${String(showSelectedPlayerLeft?.playerNumber ?? '?').padStart(2, '0')}`}</p>
-              <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
-                <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
-                  {showDrawTrack.map((player, index) => (
-                    <div className={`show-roller-item ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-left-${player.id}-${index}`}>
-                      <span>#{String(player.playerNumber).padStart(2, '0')}</span>
-                      <strong>{player.name}</strong>
-                    </div>
-                  ))}
+              <div className="show-roller-shell">
+                <span className="show-roller-arrow" aria-hidden="true">➜</span>
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
+                  <div className="show-roller-focus" aria-hidden="true" />
+                  <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
+                    {showDrawTrack.map((player, index) => (
+                      <div className={`show-roller-item ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-left-${player.id}-${index}`}>
+                        <span>#{String(player.playerNumber).padStart(2, '0')}</span>
+                        <strong>{player.name}</strong>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1360,14 +1451,18 @@ function App() {
               <div className="show-badge">EQUIPO TEAL</div>
               <h2>{showSpinnerActive ? 'Girando...' : showSelectedPlayerRight?.name ?? 'Listo para salir'}</h2>
               <p>{showSpinnerActive ? 'El lado teal está cerrando la dupla del duelo.' : `Jugador #${String(showSelectedPlayerRight?.playerNumber ?? '?').padStart(2, '0')}`}</p>
-              <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
-                <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
-                  {showDrawTrack.map((player, index) => (
-                    <div className={`show-roller-item ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-right-${player.id}-${index}`}>
-                      <span>#{String(player.playerNumber).padStart(2, '0')}</span>
-                      <strong>{player.name}</strong>
-                    </div>
-                  ))}
+              <div className="show-roller-shell">
+                <span className="show-roller-arrow is-right" aria-hidden="true">➜</span>
+                <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`}>
+                  <div className="show-roller-focus" aria-hidden="true" />
+                  <div className="show-roller-track" style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
+                    {showDrawTrack.map((player, index) => (
+                      <div className={`show-roller-item ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-right-${player.id}-${index}`}>
+                        <span>#{String(player.playerNumber).padStart(2, '0')}</span>
+                        <strong>{player.name}</strong>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1436,7 +1531,75 @@ function App() {
   );
 
   const renderThemeWheel = () => (
-    <section className="hero-frame wheel-frame"><div className="play-header"><button className="back-button" type="button" onClick={goBackScreen}>← Volver</button><div className="play-header-copy"><p className="sponsor-line">RULETA DE TEMAS</p><h1 className="play-title">Tema del duelo</h1></div></div><div className="wheel-layout"><div className={`wheel-stage ${wheelSpinning ? 'is-spinning' : ''}`}><div className="wheel-pointer" /><div className="wheel-shadow" /><div className={`wheel-disk ${wheelSpinning ? 'is-spinning' : ''}`} style={{ transform: `rotate(${wheelRotation}deg)` }} onTransitionEnd={handleWheelTransitionEnd}><div className="wheel-core" style={{ background: wheelBackground }} />{wheelThemes.map((theme, index) => { const angle = index * wheelStep + wheelStep / 2; return <div key={theme.label} className="wheel-label" style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }} aria-label={theme.label}><span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span></div>; })}<button className="wheel-center" type="button" onClick={startWheelSpin} disabled={wheelSpinning}>GO</button></div></div><div className="wheel-panel"><div className="wheel-result-card"><span className="wheel-result-label">Resultado</span><strong>{wheelSpinning ? 'Girando...' : wheelResult ?? 'Aun no giraste'}</strong><p>{wheelSpinning ? 'La ruleta sigue girando. Esperá el cierre del disco.' : 'Resultado del giro.'}</p></div><div className="wheel-actions"><button className="primary-action" type="button" onClick={startWheelSpin} disabled={wheelSpinning}>{wheelSpinning ? 'Girando...' : 'Girar ruleta'}</button><button className="secondary-action" type="button" onClick={() => setWheelResult(null)}>Limpiar resultado</button><button className="secondary-action" type="button" onClick={() => { setWheelRotation(0); setWheelResult(null); setWheelSpinning(false); setPendingThemeIndex(null); }}>Resetear ruleta</button></div></div></div></section>
+    <section className="hero-frame wheel-frame">
+      <div className="play-header">
+        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
+        <div className="play-header-copy">
+          <p className="sponsor-line">RULETA DE TEMAS</p>
+          <h1 className="play-title">Tema del duelo</h1>
+        </div>
+      </div>
+      <div className="wheel-layout">
+        <div className={`wheel-stage ${wheelSpinning ? 'is-spinning' : ''}`}>
+          <div className="wheel-pointer" />
+          <div className="wheel-shadow" />
+          <div
+            className={`wheel-disk ${wheelSpinning ? 'is-spinning' : ''}`}
+            style={{ transform: `rotate(${wheelRotation}deg)` }}
+            onTransitionEnd={handleWheelTransitionEnd}
+          >
+            <div className="wheel-core" style={{ background: wheelBackground }} />
+            {wheelThemes.map((theme, index) => {
+              const angle = index * wheelStep + wheelStep / 2;
+              return (
+                <div
+                  key={`${theme.label}-${index}`}
+                  className="wheel-label"
+                  style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }}
+                  aria-label={theme.label}
+                >
+                  <span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span>
+                </div>
+              );
+            })}
+            <button className="wheel-center" type="button" onClick={startWheelSpin} disabled={wheelSpinning}>GO</button>
+          </div>
+        </div>
+        <div className="wheel-panel">
+          <div className="wheel-result-card">
+            <span className="wheel-result-label">Resultado</span>
+            <strong>{wheelSpinning ? 'Girando...' : wheelResult ?? 'Aun no giraste'}</strong>
+            <p>{wheelSpinning ? 'La ruleta sigue girando. Esperá el cierre del disco.' : 'Resultado del giro.'}</p>
+          </div>
+          <div className="wheel-actions">
+            <button className="primary-action" type="button" onClick={startWheelSpin} disabled={wheelSpinning}>{wheelSpinning ? 'Girando...' : 'Girar ruleta'}</button>
+            <button className="secondary-action" type="button" onClick={() => setWheelResult(null)}>Limpiar resultado</button>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                setWheelRotation(0);
+                setWheelResult(null);
+                setWheelSpinning(false);
+                setPendingThemeIndex(null);
+              }}
+            >
+              Resetear ruleta
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                setWheelEditDraft(wheelThemes.map((theme) => ({ ...theme })));
+                setWheelEditOpen(true);
+              }}
+            >
+              Editar temas
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
   );
   const renderPlayers = () => (
     <section className="hero-frame players-frame">
@@ -2045,6 +2208,45 @@ function App() {
       {screen === 'duelFinalize' && renderDuelFinalize()}
       {screen === 'final' && renderFinal()}
       {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACION</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuracion">×</button></div><div className="settings-list"><div className="setting-row"><span>Duracion de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuacion</span><strong>Clasico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
+      {wheelEditOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setWheelEditOpen(false)}>
+          <div className="modal-card bulk-import-modal wheel-edit-modal" role="dialog" aria-modal="true" aria-labelledby="wheel-edit-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="modal-kicker">RULETA</p>
+                <h2 id="wheel-edit-title">Editar temas</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setWheelEditOpen(false)} aria-label="Cerrar editor de ruleta">×</button>
+            </div>
+            <div className="wheel-edit-list">
+              {wheelEditDraft.map((theme, index) => (
+                <div className="wheel-edit-row" key={`wheel-edit-${index}`}>
+                  <div className="wheel-edit-preview" aria-hidden="true">{theme.emoji || '🎯'}</div>
+                  <input
+                    className="players-input"
+                    type="text"
+                    value={theme.emoji}
+                    onChange={(event) => setWheelEditDraft((current) => current.map((item, itemIndex) => (
+                      itemIndex === index ? { ...item, emoji: event.target.value } : item
+                    )))}
+                    placeholder="Emoji"
+                  />
+                  <input
+                    className="players-input"
+                    type="text"
+                    value={theme.label}
+                    onChange={(event) => setWheelEditDraft((current) => current.map((item, itemIndex) => (
+                      itemIndex === index ? { ...item, label: event.target.value } : item
+                    )))}
+                    placeholder="Nombre del tema"
+                  />
+                </div>
+              ))}
+            </div>
+            <button className="modal-cta" type="button" onClick={saveWheelThemes}>Guardar temas</button>
+          </div>
+        </div>
+      ) : null}
       {hostAuthOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setHostAuthOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="host-auth-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">HOST PROTEGIDO</p><h2 id="host-auth-title">Ingresar contraseña</h2></div><button className="icon-button" type="button" onClick={() => setHostAuthOpen(false)} aria-label="Cerrar acceso host">×</button></div><div className="host-password-box"><p>Ingresá la clave para abrir el panel de host o la proyección.</p><input className="players-input" type="password" value={hostAuthAttempt} onChange={(event) => setHostAuthAttempt(event.target.value)} placeholder="Contraseña del host" onKeyDown={(event) => { if (event.key === 'Enter') submitHostPassword(); }} />{hostAuthError ? <p className="bulk-import-feedback">{hostAuthError}</p> : null}</div><button className="modal-cta" type="button" onClick={submitHostPassword}>Entrar</button></div></div>) : null}
       {editQuestionOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setEditQuestionOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">EDITAR PREGUNTA</p><h2 id="edit-question-title">Modificar contenido</h2></div><button className="icon-button" type="button" onClick={() => setEditQuestionOpen(false)} aria-label="Cerrar editor">×</button></div><div className="bulk-import-body"><input className="players-input" type="text" value={editQuestionDraft.prompt} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="Pregunta" /><input className="players-input" type="text" value={editQuestionDraft.answer} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, answer: event.target.value }))} placeholder="Respuesta" /><div className="questions-filter-row"><select className="players-input" value={editQuestionDraft.theme} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, theme: event.target.value }))}>{questionCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select className="players-input" value={editQuestionDraft.difficulty} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, difficulty: event.target.value }))}><option value="Facil">Facil</option><option value="Media">Media</option><option value="Dificil">Dificil</option></select></div><div className="setting-row"><span>Usada</span><input type="checkbox" checked={editQuestionDraft.used} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, used: event.target.checked }))} /></div><div className="setting-row"><span>Aprobada</span><input type="checkbox" checked={editQuestionDraft.approved} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, approved: event.target.checked }))} /></div><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={saveEditQuestion}>Guardar cambios</button><button className="secondary-action" type="button" onClick={() => setEditQuestionOpen(false)}>Cancelar</button></div></div></div></div>) : null}
       {bulkImportOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setBulkImportOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CARGA MASIVA</p><h2 id="bulk-import-title">Pegar preguntas en bloque</h2></div><button className="icon-button" type="button" onClick={() => setBulkImportOpen(false)} aria-label="Cerrar carga masiva">×</button></div><div className="bulk-import-body"><div className="bulk-import-spec"><strong>Formato esperado</strong><code>TEMA: Historia
