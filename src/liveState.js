@@ -54,6 +54,24 @@ function buildIdleTimer() {
   };
 }
 
+export function buildInitialShowState() {
+  return {
+    flowStep: 'intro',
+    spinnerActive: false,
+    spinnerSelection: null,
+    spinnerOffsets: { left: 0, right: 0 },
+    duelNames: { left: 'Jugador X', right: 'Jugador Y' },
+    duelSelection: { leftId: null, rightId: null },
+    drawPool: [],
+    readyCountdown: 10,
+    introExiting: false,
+    duelLaunched: false,
+    wheelRotation: 0,
+    wheelResult: null,
+    wheelSpinning: false,
+  };
+}
+
 function buildOutcome(state, status, side) {
   return {
     status,
@@ -109,6 +127,8 @@ export const initialLiveState = {
   message: 'Esperando senal del host',
   connectedClients: 0,
   lastAction: 'idle',
+  show: buildInitialShowState(),
+  sharedAppState: null,
 };
 
 export function liveReducer(state, action) {
@@ -414,6 +434,27 @@ export function liveReducer(state, action) {
       return {
         ...state,
         connectedClients: action.count,
+      };
+    case 'SYNC_APP_STATE':
+      return {
+        ...state,
+        sharedAppState: action.payload ?? null,
+        lastAction: 'SYNC_APP_STATE',
+      };
+    case 'SHOW_PATCH':
+      return {
+        ...state,
+        show: {
+          ...state.show,
+          ...action.patch,
+        },
+        lastAction: 'SHOW_PATCH',
+      };
+    case 'SHOW_RESET':
+      return {
+        ...state,
+        show: buildInitialShowState(),
+        lastAction: 'SHOW_RESET',
       };
     default:
       return state;
