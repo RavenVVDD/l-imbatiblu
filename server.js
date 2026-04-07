@@ -35,7 +35,36 @@ function ensureLiveTicker() {
   if (liveTicker) return;
   liveTicker = setInterval(() => {
     if (!liveState.timer.running) return;
+
+    const prevMode = liveState.timer.mode;
+
     liveState = liveReducer(liveState, { type: 'TICK_TIMER' });
+
+    // Auto steal milestone: when response timer ticks DOWN to 8 seconds remaining
+    if (
+      prevMode === 'response' &&
+      liveState.timer.seconds === 8 &&
+      liveState.timer.running &&
+      !liveState.stealAvailable
+    ) {
+      liveState = liveReducer(liveState, { type: 'ACTIVATE_STEAL_MILESTONE' });
+    }
+
+    // Auto-expire: steal timer hit 0 and nobody used it → penalize stealer
+    if (
+      !liveState.timer.running &&
+      prevMode === 'steal' &&
+      liveState.stealAvailable &&
+      !liveState.responderSide &&
+      !liveState.responseOutcome &&
+      !liveState.duelFinished
+    ) {
+      liveState = liveReducer(liveState, {
+        type: 'MARK_STEAL_WRONG',
+        side: liveState.turnSide,
+      });
+    }
+
     io.emit('state', liveState);
   }, 1000);
 }
@@ -89,3 +118,10 @@ const port = Number(process.env.PORT ?? 3001);
 server.listen(port, '0.0.0.0', () => {
   console.log(`L'Imbatiblú live server listening on http://0.0.0.0:${port}`);
 });
+
+const shutdownGracefully = () => {
+  if (liveTicker) clearInterval(liveTicker);
+  server.close(() => process.exit(0));
+};
+process.on('SIGTERM', shutdownGracefully);
+process.on('SIGINT', shutdownGracefully);

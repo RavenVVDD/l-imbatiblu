@@ -29,7 +29,7 @@ const DUEL_DRAW_SPIN_MS = 8000;
 const DUEL_DRAW_ITEM_HEIGHT = 44;
 const DUEL_DRAW_VIEWPORT_HEIGHT = 244;
 const APP_STORAGE_KEY = 'l-imbatiblu:persistent-state:v1';
-const HOST_SCREENS = new Set(['playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp']);
+const HOST_SCREENS = new Set(['playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'rps']);
 const SHOW_FLOW_STEPS = ['intro', 'standby', 'draw', 'rollers', 'versus', 'ready'];
 
 const initialPlayers = [
@@ -39,9 +39,9 @@ const initialPlayers = [
 ];
 
 const initialQuestions = [
-  { id: 'q1', prompt: '¿En que ano se inauguro el Obelisco?', answer: '1936', theme: 'Historia', difficulty: 'Facil', used: false, approved: true },
-  { id: 'q2', prompt: '¿Que deporte se juega con una pelota y once jugadores por lado?', answer: 'Futbol', theme: 'Deportes', difficulty: 'Facil', used: true, approved: true },
-  { id: 'q3', prompt: '¿Quien dirigio "El Padrino"?', answer: 'Francis Ford Coppola', theme: 'Cine', difficulty: 'Media', used: false, approved: false },
+  { id: 'q1', prompt: '¿En que ano se inauguro el Obelisco?', answer: '1936', explanation: 'El Obelisco de Buenos Aires fue inaugurado el 23 de mayo de 1936.', options: [], theme: 'Historia', difficulty: 'Facil', used: false, approved: true },
+  { id: 'q2', prompt: '¿Que deporte se juega con una pelota y once jugadores por lado?', answer: 'Futbol', explanation: 'El futbol es el deporte mas popular del mundo.', options: [], theme: 'Deportes', difficulty: 'Facil', used: true, approved: true },
+  { id: 'q3', prompt: '¿Quien dirigio "El Padrino"?', answer: 'Francis Ford Coppola', explanation: 'El Padrino (1972) fue dirigida por Francis Ford Coppola, basada en la novela de Mario Puzo.', options: [], theme: 'Cine', difficulty: 'Media', used: false, approved: false },
 ];
 
 const playFlowSteps = [
@@ -60,45 +60,52 @@ const playFlowSteps = [
     buttonLabel: 'Abrir preguntas',
   },
   {
-    id: 'themeWheel',
-    kicker: '02',
-    title: 'Ruleta de temas',
-    description: 'Elegí el tema del duelo con el giro animado que define la ronda.',
-    buttonLabel: 'Abrir ruleta',
-  },
-  {
     id: 'duelDraw',
-    kicker: '03',
+    kicker: '02',
     title: 'Sorteo de duelo',
     description: 'Hacé girar los dos rollers y dejá armada la pareja que va a jugar.',
     buttonLabel: 'Abrir sorteo',
   },
   {
-    id: 'duelIntro',
+    id: 'rps',
+    kicker: '03',
+    title: 'Primer turno',
+    description: 'Resolvé el RPS o confirma al desafiante entrante para definir quién abre el duelo.',
+    buttonLabel: 'Asignar inicio',
+  },
+  {
+    id: 'themeWheel',
     kicker: '04',
+    title: 'Ruleta de temas',
+    description: 'Elegí el tema del duelo con el giro animado. Un solo tema por duelo.',
+    buttonLabel: 'Abrir ruleta',
+  },
+  {
+    id: 'duelIntro',
+    kicker: '05',
     title: 'Comienza el duelo',
     description: 'Mostrá la presentación previa antes de pasar al host y al show.',
     buttonLabel: 'Abrir intro',
   },
   {
     id: 'broadcast',
-    kicker: '05',
+    kicker: '06',
     title: 'Pantallas en vivo',
     description: 'Separá conductor, show y standby con la misma verdad de la partida.',
     buttonLabel: 'Abrir pantallas',
   },
   {
     id: 'duelFinalize',
-    kicker: '06',
+    kicker: '07',
     title: 'Finalización',
     description: 'Cerrá el duelo y devolvé la vista a standby para el próximo cruce.',
     buttonLabel: 'Cerrar duelo',
   },
   {
     id: 'final',
-    kicker: '07',
+    kicker: '08',
     title: 'Final',
-    description: 'Revisá el ranking final con desempates y contendientes al cierre.',
+    description: 'Revisá el ranking final, los 4 finalistas y los desempates al cierre.',
     buttonLabel: 'Abrir final',
   },
 ];
@@ -223,6 +230,8 @@ function App() {
   const [questions, setQuestions] = useState(buildInitialQuestions);
   const [questionPrompt, setQuestionPrompt] = useState('');
   const [questionAnswer, setQuestionAnswer] = useState('');
+  const [questionExplanation, setQuestionExplanation] = useState('');
+  const [questionOptions, setQuestionOptions] = useState(['', '', '', '']);
   const [questionTheme, setQuestionTheme] = useState('Historia');
   const [questionDifficulty, setQuestionDifficulty] = useState('Facil');
   const [questionFilterTheme, setQuestionFilterTheme] = useState('all');
@@ -238,6 +247,8 @@ function App() {
   const [editQuestionDraft, setEditQuestionDraft] = useState({
     prompt: '',
     answer: '',
+    explanation: '',
+    options: ['', '', '', ''],
     theme: 'Historia',
     difficulty: 'Facil',
     approved: true,
@@ -266,11 +277,30 @@ function App() {
   const [duelTimer, setDuelTimer] = useState({ label: 'Listo', seconds: 0, running: false, mode: 'idle' });
   const duelTimerRef = useRef(null);
 
+  // Device PIN assignment (admin sets these for both phones)
+  const [pinDraftPlayerA, setPinDraftPlayerA] = useState('');
+  const [pinDraftPlayerB, setPinDraftPlayerB] = useState('');
+
+  // RPS (rock-paper-scissors) first-turn assignment
+  const [rpsPendingSide, setRpsPendingSide] = useState(null); // pre-confirm selection
+  const [rpsConfirmed, setRpsConfirmed] = useState(false);
+
   const [liveState, setLiveState] = useState(initialLiveState);
   const [liveConnection, setLiveConnection] = useState('offline');
   const [liveQuestionDraft, setLiveQuestionDraft] = useState('¿En que ano se inauguro el Obelisco?');
   const [liveAnswerDraft, setLiveAnswerDraft] = useState('1936');
   const [liveThemeDraft, setLiveThemeDraft] = useState('Historia');
+  // Device registration for competitor phones
+  const [deviceSide, setDeviceSide] = useState(() => {
+    try {
+      const storedDuel = window.localStorage.getItem('imbatiblu:deviceDuel:v1');
+      const storedSide = window.localStorage.getItem('imbatiblu:deviceSide:v1');
+      // We compare against liveState.currentDuel later in a useEffect
+      return storedSide && storedDuel ? { side: storedSide, duel: Number(storedDuel) } : null;
+    } catch { return null; }
+  });
+  const [devicePinInput, setDevicePinInput] = useState('');
+  const [devicePinError, setDevicePinError] = useState('');
   const liveSocketRef = useRef(null);
   const hasLoadedInitialRotationRef = useRef(false);
 
@@ -323,10 +353,18 @@ function App() {
     });
   }, [players]);
 
-  const finalContenders = finalRanking.slice(0, Math.min(4, finalRanking.length));
+  // Finalists: Imbatibles fill first slots (sorted by points), then top-ranked fill remaining up to 4
+  const finalContenders = useMemo(() => {
+    const imbatiblePlayers = finalRanking.filter((p) => p.imbatible);
+    if (imbatiblePlayers.length >= 4) return imbatiblePlayers.slice(0, 4);
+    const nonImbatibles = finalRanking.filter((p) => !p.imbatible);
+    return [...imbatiblePlayers, ...nonImbatibles].slice(0, Math.min(4, finalRanking.length));
+  }, [finalRanking]);
+
   const finalWinner = finalRanking[0] ?? null;
   const finalCutoffPoints = finalContenders.length ? finalContenders[finalContenders.length - 1].points : 0;
   const finalTiePlayers = finalRanking.filter((player) => player.points === finalCutoffPoints);
+  const finalImbatibleCut = finalRanking.filter((p) => p.imbatible).length > 4;
   const showEligiblePlayers = useMemo(() => players.filter((player) => player.active && !player.imbatible), [players]);
   const showDrawTrack = useMemo(() => {
     if (!showEligiblePlayers.length) return [];
@@ -493,7 +531,7 @@ function App() {
   }, [questions, questionTheme]);
   useEffect(() => {
     const initialHash = window.location.hash.replace('#', '');
-    const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors'].includes(initialHash)
+    const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors', 'rps'].includes(initialHash)
       ? initialHash
       : 'menu';
     if (initialScreen !== screen) {
@@ -503,7 +541,7 @@ function App() {
 
     const handlePopState = (event) => {
       const nextScreen = event.state?.screen ?? (window.location.hash.replace('#', '') || 'menu');
-      if (['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors'].includes(nextScreen)) {
+      if (['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'duelDraw', 'duelIntro', 'duelFinalize', 'showMvp', 'competitors', 'rps'].includes(nextScreen)) {
         setScreen(nextScreen);
       }
     };
@@ -674,6 +712,20 @@ function App() {
     };
   }, [screen, showFlowStep, showReadyCountdown]);
 
+  // Clear device phone lock when duel changes (new players must re-enter their PIN)
+  useEffect(() => {
+    if (!deviceSide) return;
+    if (deviceSide.duel !== liveState.currentDuel) {
+      setDeviceSide(null);
+      setDevicePinInput('');
+      setDevicePinError('');
+      try {
+        window.localStorage.removeItem('imbatiblu:deviceSide:v1');
+        window.localStorage.removeItem('imbatiblu:deviceDuel:v1');
+      } catch { /* ignore */ }
+    }
+  }, [liveState.currentDuel]);
+
   useEffect(() => {
     if (duelSeatPlayerA && duelSeatPlayerB) {
       dispatchLiveAction({
@@ -813,9 +865,22 @@ function App() {
     const trimmedPrompt = questionPrompt.trim();
     const trimmedAnswer = questionAnswer.trim();
     if (!trimmedPrompt || !trimmedAnswer) return;
-    setQuestions((current) => [...current, { id: `q-${Date.now()}`, prompt: trimmedPrompt, answer: trimmedAnswer, theme: questionTheme, difficulty: questionDifficulty, used: false, approved: true }]);
+    const nonEmptyOptions = questionOptions.filter((o) => o.trim());
+    setQuestions((current) => [...current, {
+      id: `q-${Date.now()}`,
+      prompt: trimmedPrompt,
+      answer: trimmedAnswer,
+      explanation: questionExplanation.trim(),
+      options: nonEmptyOptions,
+      theme: questionTheme,
+      difficulty: questionDifficulty,
+      used: false,
+      approved: true,
+    }]);
     setQuestionPrompt('');
     setQuestionAnswer('');
+    setQuestionExplanation('');
+    setQuestionOptions(['', '', '', '']);
     setQuestionTheme('Historia');
     setQuestionDifficulty('Facil');
   };
@@ -829,6 +894,8 @@ function App() {
     setEditQuestionDraft({
       prompt: question.prompt,
       answer: question.answer,
+      explanation: question.explanation ?? '',
+      options: question.options?.length ? [...question.options, '', '', '', ''].slice(0, 4) : ['', '', '', ''],
       theme: question.theme,
       difficulty: question.difficulty,
       approved: question.approved,
@@ -842,10 +909,13 @@ function App() {
     const trimmedPrompt = editQuestionDraft.prompt.trim();
     const trimmedAnswer = editQuestionDraft.answer.trim();
     if (!trimmedPrompt || !trimmedAnswer) return;
+    const nonEmptyOptions = (editQuestionDraft.options ?? []).filter((o) => o.trim());
     updateQuestion(editQuestionId, (current) => ({
       ...current,
       prompt: trimmedPrompt,
       answer: trimmedAnswer,
+      explanation: editQuestionDraft.explanation?.trim() ?? '',
+      options: nonEmptyOptions,
       theme: editQuestionDraft.theme,
       difficulty: editQuestionDraft.difficulty,
       approved: Boolean(editQuestionDraft.approved),
@@ -902,6 +972,7 @@ function App() {
       const difficulty = parseDifficulty(fields.dificultad ?? fields.difficulty ?? questionDifficulty);
       const approvedRaw = fields.aprobada ?? fields.approved;
       const usedRaw = fields.usada ?? fields.used;
+      const explanation = fields.explicacion ?? fields.explanation ?? '';
       const approved = approvedRaw ? parseBool(approvedRaw) : true;
       const used = usedRaw ? parseBool(usedRaw) : false;
 
@@ -911,6 +982,8 @@ function App() {
         id: `q-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         prompt: prompt.trim(),
         answer: answer.trim(),
+        explanation: explanation.trim(),
+        options: [],
         theme: theme.trim() || 'Historia',
         difficulty,
         used,
@@ -1167,13 +1240,34 @@ function App() {
     setPlayers(nextPlayers);
     setRotationQueue(normalizedQueue);
     syncDuelSeats(normalizedQueue);
-    dispatchLiveAction({ type: 'NEXT_DUEL' });
-    if (normalizedQueue[0] && normalizedQueue[1]) {
+
+    // Determine who starts the next duel:
+    // If winner stays (not becoming Imbatible), the challenger (playerB seat) starts.
+    // If winner becomes Imbatible (leaves rotation), both are new — need RPS, reset RPS state.
+    if (!winnerBecomesImbatible && normalizedQueue[1]) {
+      // Challenger is the new player in seat playerB
+      dispatchLiveAction({ type: 'NEXT_DUEL' });
+      const challengerName = nextPlayers.find((p) => p.id === normalizedQueue[1])?.name ?? 'Jugador B';
+      const winnerName = nextPlayers.find((p) => p.id === normalizedQueue[0])?.name ?? 'Jugador A';
       dispatchLiveAction({
         type: 'SET_TEAM_NAMES',
-        playerA: nextPlayers.find((player) => player.id === normalizedQueue[0])?.name ?? 'Jugador A',
-        playerB: nextPlayers.find((player) => player.id === normalizedQueue[1])?.name ?? 'Jugador B',
+        playerA: winnerName,
+        playerB: challengerName,
       });
+      // Challenger (playerB) always opens the duel in subsequent rounds
+      dispatchLiveAction({ type: 'SET_STARTING_PLAYER', side: 'playerB' });
+    } else {
+      // Winner became Imbatible — fresh pair, need RPS to decide first turn
+      dispatchLiveAction({ type: 'NEXT_DUEL' });
+      setRpsConfirmed(false);
+      setRpsPendingSide(null);
+      if (normalizedQueue[0] && normalizedQueue[1]) {
+        dispatchLiveAction({
+          type: 'SET_TEAM_NAMES',
+          playerA: nextPlayers.find((p) => p.id === normalizedQueue[0])?.name ?? 'Jugador A',
+          playerB: nextPlayers.find((p) => p.id === normalizedQueue[1])?.name ?? 'Jugador B',
+        });
+      }
     }
   };
 
@@ -1206,7 +1300,8 @@ function App() {
     if (!liveState.questionVisible) return false;
     if (!liveState.timer.running) return false;
     if (liveState.revealAnswer || liveState.responseOutcome || liveState.responderSide || liveState.duelFinished) return false;
-    if (liveState.stealAvailable) return side === liveTurnSide;
+    // If steal active or main responder locked, only the turnSide (stealer) can buzz
+    if (liveState.stealAvailable || liveState.mainResponderLocked) return side === liveTurnSide;
     return true;
   };
 
@@ -1453,6 +1548,57 @@ function App() {
         <div className="summary-card"><span>Imbatibles</span><strong>{imbatibles}</strong></div>
       </div>
       <div className="players-rule"><strong>Regla fija:</strong><span>Imbatible suma +{IMBATIBLE_BONUS_POINTS} puntos.</span></div>
+
+      <div className="broadcast-card" style={{ margin: '0 0 1rem', padding: '1rem' }}>
+        <div className="broadcast-card-head">
+          <span className="machine-chip secondary">PINES DE TELÉFONOS</span>
+          {liveState.devicePins.playerA || liveState.devicePins.playerB ? (
+            <span className="machine-chip">A: {liveState.devicePins.playerA ?? '—'} · B: {liveState.devicePins.playerB ?? '—'}</span>
+          ) : null}
+        </div>
+        <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.75rem' }}>
+          Asigná un PIN a cada teléfono. Los jugadores lo ingresan en la vista Competidores para bloquearse a su lado.
+        </p>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <input
+            className="players-input"
+            type="text"
+            inputMode="numeric"
+            maxLength={6}
+            value={pinDraftPlayerA}
+            onChange={(e) => setPinDraftPlayerA(e.target.value)}
+            placeholder="PIN Jugador A"
+            style={{ flex: 1, minWidth: '120px' }}
+          />
+          <input
+            className="players-input"
+            type="text"
+            inputMode="numeric"
+            maxLength={6}
+            value={pinDraftPlayerB}
+            onChange={(e) => setPinDraftPlayerB(e.target.value)}
+            placeholder="PIN Jugador B"
+            style={{ flex: 1, minWidth: '120px' }}
+          />
+          <button
+            className="primary-action"
+            type="button"
+            onClick={() => {
+              if (!pinDraftPlayerA.trim() && !pinDraftPlayerB.trim()) return;
+              dispatchLiveAction({
+                type: 'SET_DEVICE_PINS',
+                playerA: pinDraftPlayerA.trim() || undefined,
+                playerB: pinDraftPlayerB.trim() || undefined,
+              });
+              setPinDraftPlayerA('');
+              setPinDraftPlayerB('');
+            }}
+          >
+            Confirmar PINs
+          </button>
+        </div>
+      </div>
+
       <div className="players-sortbar">
         <div className="sort-group">
           <span>Ordenar por</span>
@@ -1590,6 +1736,22 @@ function App() {
                   <span>Respuesta</span>
                   <strong>{question.answer}</strong>
                 </div>
+                {question.explanation ? (
+                  <div className="question-answer-box">
+                    <span>Explicación</span>
+                    <p style={{ margin: 0 }}>{question.explanation}</p>
+                  </div>
+                ) : null}
+                {question.options?.length ? (
+                  <div className="question-answer-box">
+                    <span>Opciones</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.25rem' }}>
+                      {question.options.map((opt, i) => (
+                        <span key={i} className="player-badge">{String.fromCharCode(65 + i)}) {opt}</span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="player-controls">
                   <button className="secondary-action" type="button" onClick={() => openEditQuestion(question)}>Editar</button>
                   <button className="secondary-action" type="button" onClick={() => updateQuestion(question.id, (current) => ({ ...current, approved: !current.approved }))}>{question.approved ? 'Marcar pendiente' : 'Aprobar'}</button>
@@ -1637,12 +1799,39 @@ function App() {
               <span className="hidden-label">Respuesta privada</span>
               <strong>{liveState.answer}</strong>
               <p>{liveResponderName ? `${liveResponderName} tiene la palabra.` : 'Solo la ve el host hasta resolver la jugada.'}</p>
+              {liveState.stealActivatedByTimer ? <p style={{ color: 'var(--accent, #7bd84a)', fontWeight: 700 }}>⚡ Robo automático activo</p> : null}
+              {(liveState.lostNextAnswerTurn.playerA || liveState.lostNextAnswerTurn.playerB) ? (
+                <p style={{ color: 'var(--error, #ff5f5f)', fontWeight: 700 }}>
+                  ⚠ Penalizado: {[liveState.lostNextAnswerTurn.playerA ? liveState.teamNames.playerA : null, liveState.lostNextAnswerTurn.playerB ? liveState.teamNames.playerB : null].filter(Boolean).join(', ')}
+                </p>
+              ) : null}
             </div>
             <div className="broadcast-metrics">
               <div><span>Tema</span><strong>{liveState.currentTheme}</strong></div>
               <div><span>Fase</span><strong>{liveCurrentPhase.title}</strong></div>
-              <div><span>Reloj</span><strong>{String(liveState.timer.seconds).padStart(2, '0')}</strong></div>
+              <div><span>Reloj ({liveState.timer.mode})</span><strong>{String(liveState.timer.seconds).padStart(2, '0')}s {liveState.timer.running ? '▶' : '■'}</strong></div>
               <div><span>Buzz</span><strong>{liveResponderName ?? 'Esperando'}</strong></div>
+              <div><span>Turno</span><strong>{liveState.teamNames[liveState.turnSide]}{liveState.mainResponderLocked ? ' 🔒' : ''}</strong></div>
+            </div>
+            <div className="broadcast-metrics" style={{ marginTop: '0.5rem' }}>
+              <div>
+                <span>Pen. {liveState.teamNames.playerA}</span>
+                <strong style={{ color: liveState.lostNextAnswerTurn.playerA ? 'var(--error, #ff5f5f)' : 'inherit' }}>
+                  {liveState.lostNextAnswerTurn.playerA ? '⚠ Penalizado' : 'Libre'}
+                </strong>
+                {liveState.lostNextAnswerTurn.playerA ? (
+                  <button className="secondary-action compact" type="button" style={{ marginLeft: '0.5rem', padding: '2px 8px', fontSize: '0.7rem' }} onClick={() => dispatchLiveAction({ type: 'CLEAR_LOST_TURN', side: 'playerA' })}>Limpiar</button>
+                ) : null}
+              </div>
+              <div>
+                <span>Pen. {liveState.teamNames.playerB}</span>
+                <strong style={{ color: liveState.lostNextAnswerTurn.playerB ? 'var(--error, #ff5f5f)' : 'inherit' }}>
+                  {liveState.lostNextAnswerTurn.playerB ? '⚠ Penalizado' : 'Libre'}
+                </strong>
+                {liveState.lostNextAnswerTurn.playerB ? (
+                  <button className="secondary-action compact" type="button" style={{ marginLeft: '0.5rem', padding: '2px 8px', fontSize: '0.7rem' }} onClick={() => dispatchLiveAction({ type: 'CLEAR_LOST_TURN', side: 'playerB' })}>Limpiar</button>
+                ) : null}
+              </div>
             </div>
           </section>
           <section className="broadcast-card conductor-card">
@@ -1660,6 +1849,7 @@ function App() {
               <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_STEAL_WRONG', side: liveState.responderSide ?? liveStealSide })} disabled={!liveState.stealAvailable || !liveState.responderSide}>Robo incorrecto</button>
               <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' })} disabled={!liveState.responseOutcome}>Limpiar overlay</button>
               <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'TOGGLE_REVEAL' })}>Mostrar respuesta</button>
+              <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'ANULATE_QUESTION' })}>Anular pregunta</button>
               <button className="secondary-action" type="button" onClick={() => dispatchLiveAction({ type: 'RESET_FLOW' })}>Reiniciar</button>
               <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
             </div>
@@ -1690,6 +1880,12 @@ function App() {
               <div><span>{liveState.teamNames.playerB}</span><strong>{liveState.scoreboard.playerB}</strong></div>
               <div><span>Reloj</span><strong>{liveState.timer.running ? `${liveState.timer.seconds}s` : '—'}</strong></div>
             </div>
+            {liveState.stealAvailable ? (
+              <div className={`show-response-banner ${liveState.stealActivatedByTimer ? 'is-playerB' : 'is-playerA'}`}>
+                <span>{liveState.stealActivatedByTimer ? '¡Robo disponible!' : 'Robo habilitado'}</span>
+                <strong>{liveState.teamNames[liveState.turnSide]} puede robar</strong>
+              </div>
+            ) : null}
             {liveState.responderSide ? (
               <div className={`show-response-banner is-${liveState.responderSide}`}>
                 <span>En respuesta</span>
@@ -1761,65 +1957,272 @@ function App() {
     </section>
   );
 
-  const renderCompetitors = () => (
-    <section className="hero-frame competitors-frame">
-      <div className="play-header">
-        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
-        <div className="play-header-copy">
-          <p className="sponsor-line">COMPETIDORES</p>
-          <h1 className="play-title">Panel de respuesta</h1>
+  const renderCompetitors = () => {
+    const lockedSide = deviceSide?.duel === liveState.currentDuel ? deviceSide.side : null;
+
+    const handlePinSubmit = () => {
+      const pin = devicePinInput.trim();
+      if (!pin) return;
+      if (pin === liveState.devicePins.playerA) {
+        const entry = { side: 'playerA', duel: liveState.currentDuel };
+        setDeviceSide(entry);
+        setDevicePinError('');
+        setDevicePinInput('');
+        try {
+          window.localStorage.setItem('imbatiblu:deviceSide:v1', 'playerA');
+          window.localStorage.setItem('imbatiblu:deviceDuel:v1', String(liveState.currentDuel));
+        } catch { /* ignore */ }
+      } else if (pin === liveState.devicePins.playerB) {
+        const entry = { side: 'playerB', duel: liveState.currentDuel };
+        setDeviceSide(entry);
+        setDevicePinError('');
+        setDevicePinInput('');
+        try {
+          window.localStorage.setItem('imbatiblu:deviceSide:v1', 'playerB');
+          window.localStorage.setItem('imbatiblu:deviceDuel:v1', String(liveState.currentDuel));
+        } catch { /* ignore */ }
+      } else {
+        setDevicePinError('PIN incorrecto. Pedíselo al host.');
+      }
+    };
+
+    const isLocked = lockedSide !== null;
+    const playerName = isLocked ? liveState.teamNames[lockedSide] : null;
+    const isPenalized = isLocked && liveState.lostNextAnswerTurn[lockedSide];
+    const isMyTurn = isLocked && liveState.turnSide === lockedSide && !liveState.stealAvailable && !liveState.mainResponderLocked;
+    const isStealAvailable = isLocked && liveState.stealAvailable && liveState.turnSide === lockedSide;
+    const isLocked_out = isLocked && liveState.mainResponderLocked && liveState.turnSide !== lockedSide;
+    const hasWord = isLocked && liveState.responderSide === lockedSide;
+    const canBuzz = isLocked && canCompetitorBuzz(lockedSide);
+
+    const buzzLabel = () => {
+      if (!liveState.questionVisible) return 'ESPERA AL HOST';
+      if (liveState.duelFinished) return 'DUELO TERMINADO';
+      if (liveState.responseOutcome) return liveState.responseOutcome.status === 'success' ? 'RESPUESTA CORRECTA' : 'RESPUESTA FALLIDA';
+      if (hasWord) return 'TENÉS LA PALABRA';
+      if (isLocked_out) return 'BLOQUEADO';
+      if (isStealAvailable) return 'ROBAR AHORA';
+      if (isMyTurn) return 'RESPONDER';
+      return 'ESPERA';
+    };
+
+    const buzzStatus = () => {
+      if (!liveState.questionVisible) return { badge: 'ESPERA', title: 'Pregunta oculta', desc: 'El host revelará la pregunta. Cuando aparezca, tocá responder.' };
+      if (liveState.duelFinished) return { badge: 'FIN', title: 'Duelo terminado', desc: `Ganó ${liveState.duelWinnerSide ? liveState.teamNames[liveState.duelWinnerSide] : '—'}` };
+      if (liveState.responseOutcome) return {
+        badge: liveState.responseOutcome.status === 'success' ? 'ACIERTO' : 'ERROR',
+        title: liveState.teamNames[liveState.responseOutcome.side] ?? '—',
+        desc: liveState.responseOutcome.status === 'success' ? 'Respuesta validada.' : 'Esperando próxima jugada.',
+      };
+      if (hasWord) return { badge: 'RESPONDÉS', title: '¡Tenés la palabra!', desc: 'El host va a validar tu respuesta.' };
+      if (isLocked_out) return { badge: 'BLOQUEADO', title: 'Tu turno de respuesta pasó', desc: 'El rival puede robar. Esperá la siguiente pregunta.' };
+      if (isStealAvailable) return { badge: 'ROBO', title: '¡Podés robar!', desc: 'El rival falló. Tocá ROBAR y respondé.' };
+      if (isMyTurn) return { badge: 'TU TURNO', title: '¡Es tu turno!', desc: `Tenés ${liveState.timer.seconds}s para responder.` };
+      if (liveState.stealAvailable) return { badge: 'ESPERA', title: 'El rival tiene el robo', desc: 'Si falla, es tu turno.' };
+      return { badge: 'AL AIRE', title: 'Esperando primer buzz', desc: 'Tocá rápido para tomar la palabra.' };
+    };
+
+    const status = isLocked ? buzzStatus() : null;
+
+    return (
+      <section className="hero-frame competitors-frame">
+        <div className="play-header">
+          <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
+          <div className="play-header-copy">
+            <p className="sponsor-line">COMPETIDORES</p>
+            <h1 className="play-title">{isLocked ? playerName : 'Panel de respuesta'}</h1>
+          </div>
         </div>
-      </div>
-      <div className="broadcast-connection">
-        <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
-        <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
-      </div>
-      <section className="broadcast-card competitors-stage">
-        <div className="competitors-status">
-          {!liveState.questionVisible ? (
+        <div className="broadcast-connection">
+          <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
+          <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
+          {isLocked ? <span className="machine-chip">Bloqueado a {lockedSide === 'playerA' ? 'Coral' : 'Teal'}</span> : null}
+        </div>
+
+        {!isLocked ? (
+          <section className="broadcast-card competitors-stage">
+            <div className="competitors-status">
+              <span className="show-badge">INGRESÁ TU PIN</span>
+              <h2>Identificate para jugar</h2>
+              <p>El host asignó un PIN a tu teléfono. Ingresalo para bloquear este dispositivo a tu lado y habilitar tu botón de respuesta.</p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxWidth: '320px', margin: '1.5rem auto 0' }}>
+              <input
+                className="players-input"
+                type="text"
+                inputMode="numeric"
+                value={devicePinInput}
+                onChange={(e) => setDevicePinInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handlePinSubmit(); }}
+                placeholder="Ingresá tu PIN"
+                style={{ fontSize: '1.5rem', textAlign: 'center', letterSpacing: '0.2em' }}
+              />
+              {devicePinError ? <p style={{ color: 'var(--error, #ff5f5f)', textAlign: 'center', margin: 0 }}>{devicePinError}</p> : null}
+              <button className="primary-action" type="button" onClick={handlePinSubmit}>Confirmar PIN</button>
+              {!liveState.devicePins.playerA && !liveState.devicePins.playerB ? (
+                <p style={{ fontSize: '0.75rem', color: 'var(--muted)', textAlign: 'center', margin: 0 }}>
+                  El host aún no configuró los PINs. Pedíselo antes de empezar.
+                </p>
+              ) : null}
+            </div>
+          </section>
+        ) : (
+          <section className={`broadcast-card competitors-stage ${lockedSide === 'playerA' ? 'is-playerA-locked' : 'is-playerB-locked'}`}>
+            {isPenalized ? (
+              <div className="broadcast-note" style={{ marginBottom: '1rem', background: 'var(--warning-bg, #fff3cd)', borderColor: 'var(--warning, #ffcb00)' }}>
+                <strong>⚠ Penalización activa</strong>
+                <span> Tu próximo turno de respuesta será salteado por haber fallado el robo.</span>
+              </div>
+            ) : null}
+            <div className="competitors-status">
+              <span className={`show-badge ${isMyTurn ? 'is-success' : isStealAvailable ? 'is-playerB' : ''}`}>{status.badge}</span>
+              <h2>{status.title}</h2>
+              <p>{status.desc}</p>
+              {liveState.timer.running ? (
+                <div style={{ fontSize: '2.5rem', fontWeight: 900, letterSpacing: '-0.04em', margin: '0.5rem 0' }}>
+                  {liveState.timer.seconds}s
+                </div>
+              ) : null}
+            </div>
+            <div className="competitor-actions-grid" style={{ gridTemplateColumns: '1fr' }}>
+              <button
+                className={`competitor-action-card ${lockedSide === 'playerA' ? 'is-playerA' : 'is-playerB'}`}
+                type="button"
+                onClick={() => dispatchLiveAction({ type: 'PLAYER_BUZZ_IN', side: lockedSide })}
+                disabled={!canBuzz}
+                style={{ minHeight: '140px' }}
+              >
+                <span>{lockedSide === 'playerA' ? 'Equipo coral' : 'Equipo teal'}</span>
+                <strong>{playerName}</strong>
+                <em>{buzzLabel()}</em>
+              </button>
+            </div>
+            <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+              <button
+                className="secondary-action compact"
+                type="button"
+                onClick={() => {
+                  setDeviceSide(null);
+                  setDevicePinInput('');
+                  setDevicePinError('');
+                  try {
+                    window.localStorage.removeItem('imbatiblu:deviceSide:v1');
+                    window.localStorage.removeItem('imbatiblu:deviceDuel:v1');
+                  } catch { /* ignore */ }
+                }}
+              >
+                Cerrar sesión de teléfono
+              </button>
+            </div>
+          </section>
+        )}
+      </section>
+    );
+  };
+
+  const renderRps = () => {
+    const isFirstDuel = liveState.currentDuel === 1;
+    const challengerSide = 'playerB'; // In subsequent duels, challenger is always playerB seat
+    const challengerName = liveState.teamNames[challengerSide];
+    const playerAName = liveState.teamNames.playerA;
+    const playerBName = liveState.teamNames.playerB;
+
+    const confirmStarter = () => {
+      if (!rpsPendingSide) return;
+      dispatchLiveAction({ type: 'SET_STARTING_PLAYER', side: rpsPendingSide });
+      setRpsConfirmed(true);
+    };
+
+    return (
+      <section className="hero-frame duel-intro-frame">
+        <div className="play-header">
+          <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
+          <div className="play-header-copy">
+            <p className="sponsor-line">PRIMER TURNO</p>
+            <h1 className="play-title">{isFirstDuel ? 'Piedra papel o tijera' : 'Desafiante al bat'}</h1>
+          </div>
+        </div>
+        <div className="duel-intro-stage">
+          <div className="duel-intro-pulse" />
+          {isFirstDuel ? (
             <>
-              <span className="show-badge">ESPERA</span>
-              <h2>Pregunta oculta</h2>
-              <p>El host va a revelar la pregunta desde su panel. Cuando aparezca, tocá responder.</p>
-            </>
-          ) : liveState.responseOutcome ? (
-            <>
-              <span className={`show-badge ${liveState.responseOutcome.status === 'success' ? 'is-success' : 'is-error'}`}>{liveState.responseOutcome.status === 'success' ? 'ACIERTO' : 'ERROR'}</span>
-              <h2>{liveOutcomeName}</h2>
-              <p>{liveState.responseOutcome.status === 'success' ? 'Respuesta validada por el host.' : 'Esperando la apertura del robo o la siguiente jugada.'}</p>
-            </>
-          ) : liveState.responderSide ? (
-            <>
-              <span className={`show-badge is-${liveState.responderSide}`}>RESPONDE</span>
-              <h2>{liveResponderName}</h2>
-              <p>{liveResponderName} ya tomó la palabra. El resto espera resolución del host.</p>
+              <div className="show-badge">RPS — DUELO 1</div>
+              <h1>¿Quién ganó el RPS?</h1>
+              <p>Resolvé el piedra papel o tijera y tocá al ganador para asignarle el primer turno de respuesta.</p>
+              <div className="duel-intro-versus">
+                <button
+                  className={`duel-intro-card ${rpsPendingSide === 'playerA' ? 'is-selected' : ''}`}
+                  type="button"
+                  style={{ cursor: 'pointer', border: rpsPendingSide === 'playerA' ? '2px solid var(--accent, #7bd84a)' : '2px solid transparent' }}
+                  onClick={() => { setRpsPendingSide('playerA'); setRpsConfirmed(false); }}
+                >
+                  <span>Jugador A · Coral</span>
+                  <strong>{playerAName}</strong>
+                  {rpsPendingSide === 'playerA' ? <em>Seleccionado</em> : null}
+                </button>
+                <div className="duel-intro-vs">VS</div>
+                <button
+                  className={`duel-intro-card ${rpsPendingSide === 'playerB' ? 'is-selected' : ''}`}
+                  type="button"
+                  style={{ cursor: 'pointer', border: rpsPendingSide === 'playerB' ? '2px solid var(--accent, #7bd84a)' : '2px solid transparent' }}
+                  onClick={() => { setRpsPendingSide('playerB'); setRpsConfirmed(false); }}
+                >
+                  <span>Jugador B · Teal</span>
+                  <strong>{playerBName}</strong>
+                  {rpsPendingSide === 'playerB' ? <em>Seleccionado</em> : null}
+                </button>
+              </div>
+              {rpsPendingSide && !rpsConfirmed ? (
+                <div className="broadcast-actions duel-intro-actions">
+                  <button className="primary-action" type="button" onClick={confirmStarter}>
+                    Confirmar — {liveState.teamNames[rpsPendingSide]} abre el duelo
+                  </button>
+                  <button className="secondary-action" type="button" onClick={() => setRpsPendingSide(null)}>Cambiar</button>
+                </div>
+              ) : rpsConfirmed ? (
+                <div className="broadcast-actions duel-intro-actions">
+                  <div className="broadcast-note"><strong>Confirmado:</strong><span> {liveState.teamNames[rpsPendingSide]} abre el duelo</span></div>
+                  <button className="secondary-action" type="button" onClick={() => { setRpsPendingSide(null); setRpsConfirmed(false); }}>Cambiar selección</button>
+                  <button className="primary-action" type="button" onClick={() => navigateToScreen('themeWheel')}>Continuar a ruleta</button>
+                </div>
+              ) : (
+                <div className="broadcast-actions duel-intro-actions">
+                  <p style={{ color: 'var(--muted)', textAlign: 'center', margin: 0 }}>Tocá un jugador para seleccionarlo.</p>
+                </div>
+              )}
             </>
           ) : (
             <>
-              <span className="show-badge">AL AIRE</span>
-              <h2>{liveState.stealAvailable ? `Robo para ${liveTurnName}` : '¡A responder!'}</h2>
-              <p>{liveState.stealAvailable ? 'Solo el equipo habilitado puede tocar responder.' : 'El primer toque gana la palabra.'}</p>
+              <div className="show-badge">DUELO #{liveState.currentDuel}</div>
+              <h1>Desafiante al bat</h1>
+              <p>El desafiante entrante siempre abre el duelo. {challengerName} responde primero.</p>
+              <div className="duel-intro-versus">
+                <div className="duel-intro-card">
+                  <span>Defensor · Coral</span>
+                  <strong>{playerAName}</strong>
+                  <em>Responde segundo</em>
+                </div>
+                <div className="duel-intro-vs">⚔</div>
+                <div className="duel-intro-card" style={{ border: '2px solid var(--accent, #7bd84a)' }}>
+                  <span>Desafiante · Teal</span>
+                  <strong>{challengerName}</strong>
+                  <em>Abre el duelo ✓</em>
+                </div>
+              </div>
+              <div className="broadcast-actions duel-intro-actions">
+                <button className="primary-action" type="button" onClick={() => {
+                  dispatchLiveAction({ type: 'SET_STARTING_PLAYER', side: challengerSide });
+                  navigateToScreen('themeWheel');
+                }}>
+                  Confirmar — {challengerName} abre el duelo
+                </button>
+              </div>
             </>
           )}
         </div>
-        <div className="competitor-actions-grid">
-          {['playerA', 'playerB'].map((side) => (
-            <button
-              key={side}
-              className={`competitor-action-card ${side === 'playerA' ? 'is-playerA' : 'is-playerB'}`}
-              type="button"
-              onClick={() => dispatchLiveAction({ type: 'PLAYER_BUZZ_IN', side })}
-              disabled={!canCompetitorBuzz(side)}
-            >
-              <span>{side === 'playerA' ? 'Equipo coral' : 'Equipo teal'}</span>
-              <strong>{liveState.teamNames[side]}</strong>
-              <em>{canCompetitorBuzz(side) ? 'RESPONDER' : liveState.responderSide === side ? 'TENÉS LA PALABRA' : 'ESPERA'}</em>
-            </button>
-          ))}
-        </div>
       </section>
-    </section>
-  );
+    );
+  };
 
   const renderDuelDraw = () => (
     <section className="hero-frame duel-draw-frame">
@@ -1966,57 +2369,90 @@ function App() {
         <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
         <div className="play-header-copy">
           <p className="sponsor-line">FINAL</p>
-          <h1 className="play-title">Ranking por puntaje</h1>
+          <h1 className="play-title">Ranking y finalistas</h1>
         </div>
       </div>
       <div className="players-summary">
         <div className="summary-card"><span>Jugadores</span><strong>{players.length}</strong></div>
-        <div className="summary-card"><span>Contendientes</span><strong>{finalContenders.length}</strong></div>
-        <div className="summary-card"><span>Lider</span><strong>{finalWinner?.name ?? 'Pendiente'}</strong></div>
+        <div className="summary-card"><span>Imbatibles</span><strong>{players.filter((p) => p.imbatible).length}</strong></div>
+        <div className="summary-card"><span>Finalistas</span><strong>{finalContenders.length}</strong></div>
       </div>
-      <div className="players-rule"><strong>Desempate:</strong><span>Primero puntos, luego rondas ganadas, despues robos correctos, estado Imbatible y por ultimo numero de jugador.</span></div>
+
+      {finalImbatibleCut ? (
+        <div className="broadcast-note" style={{ margin: '0 0 1rem' }}>
+          <strong>⚠ Más de 4 Imbatibles:</strong>
+          <span> Se tomaron los 4 con más puntos. Los empatados pueden necesitar pregunta de desempate.</span>
+        </div>
+      ) : null}
+
       <div className="players-layout">
         <section className="players-panel">
+          <h2 style={{ padding: '0 0 0.75rem', fontSize: '1rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tabla completa</h2>
+          <div className="players-table-head">
+            <span>#</span>
+            <span>Jugador</span>
+            <span>Pts</span>
+            <span>Duelos</span>
+            <span>Robos</span>
+            <span>Racha</span>
+            <span>Estado</span>
+          </div>
           <div className="players-list">
-            {finalRanking.map((player, index) => (
-              <article className={`player-card ${index === 0 ? 'is-celebrating' : ''}`} key={player.id}>
-                <div className="player-card-top">
-                  <div>
+            {finalRanking.map((player, index) => {
+              const isFinalist = finalContenders.some((c) => c.id === player.id);
+              return (
+                <article className={`player-row ${index === 0 ? 'is-celebrating' : ''}`} key={player.id}>
+                  <div className="player-row-cell player-row-index">
                     <span className="player-index">#{String(index + 1).padStart(2, '0')}</span>
-                    <h2>{player.name}</h2>
                   </div>
-                  <div className="player-badges">
-                    {index === 0 ? <span className="player-badge highlight">Lider</span> : null}
-                    {player.imbatible ? <span className="player-badge">Imbatible</span> : null}
-                    <span className="player-badge muted">Racha {player.winStreak}</span>
+                  <div className="player-row-cell player-row-name">
+                    <strong>{player.name}</strong>
+                    <div className="player-badges compact">
+                      {player.imbatible ? <span className="player-badge highlight">👑 Imbatible</span> : null}
+                      {player.winStreak > 0 ? <span className="player-badge">Racha {player.winStreak}</span> : null}
+                    </div>
                   </div>
-                </div>
-                <div className="player-points-box">
-                  <span>Puntos totales</span>
-                  <strong>{player.points}</strong>
-                </div>
-                <div className="show-side-list">
-                  <div className="show-side-item"><span>Jugador</span><strong>#{player.playerNumber}</strong></div>
-                  <div className="show-side-item"><span>Activo</span><strong>{player.active ? 'Si' : 'No'}</strong></div>
-                  <div className="show-side-item"><span>Racha</span><strong>{player.winStreak}</strong></div>
-                </div>
-              </article>
-            ))}
+                  <div className="player-row-cell player-row-points"><strong>{player.points}</strong></div>
+                  <div className="player-row-cell"><strong>{player.roundsWon}</strong></div>
+                  <div className="player-row-cell"><strong>{player.stealsWon}</strong></div>
+                  <div className="player-row-cell"><strong>{player.winStreak}</strong></div>
+                  <div className="player-row-cell">
+                    {player.imbatible ? (
+                      <span className="player-badge highlight">👑 Imbatible</span>
+                    ) : isFinalist ? (
+                      <span className="player-badge">✅ Finalista</span>
+                    ) : (
+                      <span className="player-badge muted">— Eliminado</span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
+
         <aside className="players-side">
           <div className="players-note">
-            <h2>Finalistas</h2>
-            <p>{finalContenders.map((player) => player.name).join(' - ') || 'Sin clasificar todavia'}</p>
+            <h2>Los 4 finalistas</h2>
+            <p>Imbatibles primero, luego los mejores por ranking.</p>
           </div>
-          <div className="players-note">
-            <h2>Empate en corte</h2>
-            <p>{finalTiePlayers.length > 1 ? `${finalTiePlayers.length} jugadores quedaron empatados en ${finalCutoffPoints} puntos.` : 'No hay empate en el corte de ingreso.'}</p>
-          </div>
-          <div className="players-note">
-            <h2>Ganador actual</h2>
-            <p>{finalWinner ? `${finalWinner.name} lidera con ${finalWinner.points} puntos.` : 'Todavia no hay ranking.'}</p>
-          </div>
+          {finalContenders.map((player, index) => (
+            <div className="players-note" key={player.id} style={{ borderLeft: player.imbatible ? '3px solid var(--accent, #7bd84a)' : '3px solid var(--muted-border, #333)' }}>
+              <h2>Finalista {index + 1} {player.imbatible ? '👑' : ''}</h2>
+              <p><strong>{player.name}</strong> · {player.points} pts · {player.roundsWon} duelos</p>
+              {player.imbatible ? <span className="player-badge highlight">Clasificó por Imbatible</span> : <span className="player-badge">Clasificó por ranking</span>}
+            </div>
+          ))}
+          {finalContenders.length === 0 ? (
+            <div className="players-note"><p>Sin clasificados todavía.</p></div>
+          ) : null}
+          {finalTiePlayers.length > 1 ? (
+            <div className="players-note" style={{ borderLeft: '3px solid var(--error, #ff5f5f)' }}>
+              <h2>⚠ Empate en corte</h2>
+              <p>{finalTiePlayers.length} jugadores empatados con {finalCutoffPoints} pts: {finalTiePlayers.map((p) => p.name).join(', ')}.</p>
+              <p>Resolver con pregunta de desempate.</p>
+            </div>
+          ) : null}
         </aside>
       </div>
     </section>
@@ -2043,10 +2479,11 @@ function App() {
       {screen === 'duelDraw' && renderDuelDraw()}
       {screen === 'duelIntro' && renderDuelIntro()}
       {screen === 'duelFinalize' && renderDuelFinalize()}
+      {screen === 'rps' && renderRps()}
       {screen === 'final' && renderFinal()}
       {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACION</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuracion">×</button></div><div className="settings-list"><div className="setting-row"><span>Duracion de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuacion</span><strong>Clasico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
       {hostAuthOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setHostAuthOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="host-auth-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">HOST PROTEGIDO</p><h2 id="host-auth-title">Ingresar contraseña</h2></div><button className="icon-button" type="button" onClick={() => setHostAuthOpen(false)} aria-label="Cerrar acceso host">×</button></div><div className="host-password-box"><p>Ingresá la clave para abrir el panel de host o la proyección.</p><input className="players-input" type="password" value={hostAuthAttempt} onChange={(event) => setHostAuthAttempt(event.target.value)} placeholder="Contraseña del host" onKeyDown={(event) => { if (event.key === 'Enter') submitHostPassword(); }} />{hostAuthError ? <p className="bulk-import-feedback">{hostAuthError}</p> : null}</div><button className="modal-cta" type="button" onClick={submitHostPassword}>Entrar</button></div></div>) : null}
-      {editQuestionOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setEditQuestionOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">EDITAR PREGUNTA</p><h2 id="edit-question-title">Modificar contenido</h2></div><button className="icon-button" type="button" onClick={() => setEditQuestionOpen(false)} aria-label="Cerrar editor">×</button></div><div className="bulk-import-body"><input className="players-input" type="text" value={editQuestionDraft.prompt} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="Pregunta" /><input className="players-input" type="text" value={editQuestionDraft.answer} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, answer: event.target.value }))} placeholder="Respuesta" /><div className="questions-filter-row"><select className="players-input" value={editQuestionDraft.theme} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, theme: event.target.value }))}>{questionCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select className="players-input" value={editQuestionDraft.difficulty} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, difficulty: event.target.value }))}><option value="Facil">Facil</option><option value="Media">Media</option><option value="Dificil">Dificil</option></select></div><div className="setting-row"><span>Usada</span><input type="checkbox" checked={editQuestionDraft.used} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, used: event.target.checked }))} /></div><div className="setting-row"><span>Aprobada</span><input type="checkbox" checked={editQuestionDraft.approved} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, approved: event.target.checked }))} /></div><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={saveEditQuestion}>Guardar cambios</button><button className="secondary-action" type="button" onClick={() => setEditQuestionOpen(false)}>Cancelar</button></div></div></div></div>) : null}
+      {editQuestionOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setEditQuestionOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">EDITAR PREGUNTA</p><h2 id="edit-question-title">Modificar contenido</h2></div><button className="icon-button" type="button" onClick={() => setEditQuestionOpen(false)} aria-label="Cerrar editor">×</button></div><div className="bulk-import-body"><input className="players-input" type="text" value={editQuestionDraft.prompt} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="Pregunta" /><input className="players-input" type="text" value={editQuestionDraft.answer} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, answer: event.target.value }))} placeholder="Respuesta" /><input className="players-input" type="text" value={editQuestionDraft.explanation ?? ''} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, explanation: event.target.value }))} placeholder="Explicación (opcional)" />{(editQuestionDraft.options ?? ['', '', '', '']).map((opt, i) => (<input key={i} className="players-input" type="text" value={opt} onChange={(e) => setEditQuestionDraft((current) => ({ ...current, options: (current.options ?? ['', '', '', '']).map((o, idx) => idx === i ? e.target.value : o) }))} placeholder={`Opción ${String.fromCharCode(65 + i)} (opcional)`} />))}<div className="questions-filter-row"><select className="players-input" value={editQuestionDraft.theme} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, theme: event.target.value }))}>{questionCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select className="players-input" value={editQuestionDraft.difficulty} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, difficulty: event.target.value }))}><option value="Facil">Facil</option><option value="Media">Media</option><option value="Dificil">Dificil</option></select></div><div className="setting-row"><span>Usada</span><input type="checkbox" checked={editQuestionDraft.used} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, used: event.target.checked }))} /></div><div className="setting-row"><span>Aprobada</span><input type="checkbox" checked={editQuestionDraft.approved} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, approved: event.target.checked }))} /></div><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={saveEditQuestion}>Guardar cambios</button><button className="secondary-action" type="button" onClick={() => setEditQuestionOpen(false)}>Cancelar</button></div></div></div></div>) : null}
       {bulkImportOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setBulkImportOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CARGA MASIVA</p><h2 id="bulk-import-title">Pegar preguntas en bloque</h2></div><button className="icon-button" type="button" onClick={() => setBulkImportOpen(false)} aria-label="Cerrar carga masiva">×</button></div><div className="bulk-import-body"><div className="bulk-import-spec"><strong>Formato esperado</strong><code>TEMA: Historia
 DIFICULTAD: Facil
 PREGUNTA: ¿En que ano se inauguro el Obelisco?

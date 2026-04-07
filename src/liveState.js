@@ -3,7 +3,7 @@ export const LIVE_PHASES = [
   {
     id: 'theme_selection',
     title: 'Seleccion de tema',
-    description: 'La ruleta define el tema unico del duelo.',
+    description: 'La ruleta define el tema unico del duelo — una sola vez por duelo.',
   },
   {
     id: 'question_turn',
@@ -109,6 +109,14 @@ export const initialLiveState = {
   message: 'Esperando senal del host',
   connectedClients: 0,
   lastAction: 'idle',
+  // Turn management
+  lostNextAnswerTurn: { playerA: false, playerB: false },
+  mainResponderLocked: false,
+  stealActivatedByTimer: false,
+  turnNumber: 0,
+  startingPlayerId: null,
+  // Device PIN assignment
+  devicePins: { playerA: null, playerB: null },
 };
 
 export function liveReducer(state, action) {
@@ -135,6 +143,7 @@ export function liveReducer(state, action) {
         connectedClients: state.connectedClients,
         teamNames: state.teamNames,
         currentDuel: state.currentDuel,
+        devicePins: state.devicePins,
       };
     case 'NEXT_DUEL':
       return {
@@ -145,8 +154,10 @@ export function liveReducer(state, action) {
         answer: 'Todavia no hay respuesta cargada',
         questionVisible: false,
         revealAnswer: false,
-        turnSide: 'playerA',
+        turnSide: state.startingPlayerId ?? 'playerA',
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: null,
         turnLabel: 'Listo para arrancar',
@@ -158,6 +169,9 @@ export function liveReducer(state, action) {
         duelWinnerSide: null,
         duelFinished: false,
         phaseIndex: 0,
+        lostNextAnswerTurn: { playerA: false, playerB: false },
+        turnNumber: 0,
+        startingPlayerId: null,
         message: `Arranca el duelo ${state.currentDuel + 1}`,
         lastAction: 'NEXT_DUEL',
       };
@@ -178,6 +192,8 @@ export function liveReducer(state, action) {
         questionVisible: false,
         revealAnswer: false,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: null,
         turnSide: action.turnSide ?? state.turnSide,
@@ -187,37 +203,57 @@ export function liveReducer(state, action) {
         phaseIndex: Math.max(state.phaseIndex, 1),
         lastAction: 'SET_QUESTION',
       };
-    case 'REVEAL_QUESTION':
+    case 'REVEAL_QUESTION': {
+      // Check lostNextAnswerTurn: if the current responder is penalized, skip them
+      const penalizedSide = state.turnSide;
+      const isPenalized = state.lostNextAnswerTurn[penalizedSide];
+      const nextTurnSide = isPenalized ? oppositeSide(penalizedSide) : state.turnSide;
+      const nextLostNextAnswerTurn = isPenalized
+        ? { ...state.lostNextAnswerTurn, [penalizedSide]: false }
+        : state.lostNextAnswerTurn;
+
       return {
         ...state,
         questionVisible: true,
         revealAnswer: false,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: null,
+        turnSide: nextTurnSide,
+        lostNextAnswerTurn: nextLostNextAnswerTurn,
+        turnNumber: state.turnNumber + 1,
         timer: {
           label: 'Respuesta',
-          seconds: 5,
+          seconds: 15,
           running: true,
           mode: 'response',
         },
-        turnLabel: 'Esperando responder',
-        message: 'Pregunta revelada al aire',
+        turnLabel: isPenalized
+          ? `Turno saltado — ${state.teamNames[penalizedSide]} penalizado`
+          : 'Esperando responder',
+        message: isPenalized
+          ? `Turno de ${state.teamNames[penalizedSide]} saltado por penalizacion`
+          : 'Pregunta revelada al aire',
         phaseIndex: LIVE_PHASES.findIndex((phase) => phase.id === 'question_turn'),
         lastAction: 'REVEAL_QUESTION',
       };
+    }
     case 'OPEN_STEAL_WINDOW': {
       const stealSide = action.side ?? oppositeSide(state.turnSide);
       return {
         ...state,
         questionVisible: true,
         stealAvailable: true,
+        mainResponderLocked: true,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: null,
         turnSide: stealSide,
         timer: {
           label: 'Robo',
-          seconds: 3,
+          seconds: 5,
           running: true,
           mode: 'steal',
         },
@@ -227,9 +263,34 @@ export function liveReducer(state, action) {
         lastAction: 'OPEN_STEAL_WINDOW',
       };
     }
+    case 'ACTIVATE_STEAL_MILESTONE': {
+      // Auto-triggered by server when response timer reaches second 8
+      if (state.stealAvailable) return state;
+      const milestoneSide = oppositeSide(state.turnSide);
+      return {
+        ...state,
+        stealAvailable: true,
+        mainResponderLocked: true,
+        stealActivatedByTimer: true,
+        turnSide: milestoneSide,
+        timer: {
+          label: 'Robo',
+          seconds: 5,
+          running: true,
+          mode: 'steal',
+        },
+        turnLabel: `Robo disponible para ${state.teamNames[milestoneSide]}`,
+        message: `Robo habilitado — ${state.teamNames[milestoneSide]} puede robar`,
+        phaseIndex: LIVE_PHASES.findIndex((phase) => phase.id === 'steal_turn'),
+        lastAction: 'ACTIVATE_STEAL_MILESTONE',
+      };
+    }
     case 'PLAYER_BUZZ_IN': {
       if (!state.questionVisible || state.responseOutcome || state.responderSide) return state;
+      // If steal is available, only the current turnSide (stealer) can buzz
       if (state.stealAvailable && action.side !== state.turnSide) return state;
+      // If main responder is locked, only turnSide (stealer) can buzz
+      if (state.mainResponderLocked && action.side !== state.turnSide) return state;
 
       return {
         ...state,
@@ -249,6 +310,15 @@ export function liveReducer(state, action) {
         turnLabel: buildTurnMessage(state, action.side, 'Turno de'),
         message: `Turno asignado a ${state.teamNames[action.side]}`,
         lastAction: 'SET_TURN_SIDE',
+      };
+    case 'SET_STARTING_PLAYER':
+      return {
+        ...state,
+        startingPlayerId: action.side,
+        turnSide: action.side,
+        turnLabel: `${state.teamNames[action.side]} abre el duelo`,
+        message: `${state.teamNames[action.side]} empieza primero`,
+        lastAction: 'SET_STARTING_PLAYER',
       };
     case 'SET_TIMER':
       return {
@@ -299,9 +369,12 @@ export function liveReducer(state, action) {
         questionVisible: true,
         revealAnswer: true,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: scorerSide,
         responseOutcome: buildOutcome(state, 'success', scorerSide),
         timer: buildIdleTimer(),
+        turnSide: oppositeSide(scorerSide), // strict alternation: turn flips after correct answer
         turnLabel: 'Respuesta correcta',
         lastAction: 'MARK_RESPONSE_CORRECT',
       };
@@ -311,6 +384,7 @@ export function liveReducer(state, action) {
       return {
         ...state,
         stealAvailable: true,
+        mainResponderLocked: true,
         responderSide: null,
         responseOutcome: buildOutcome(state, 'error', wrongSide),
         timer: buildIdleTimer(),
@@ -321,45 +395,55 @@ export function liveReducer(state, action) {
         lastAction: 'MARK_RESPONSE_WRONG',
       };
     }
-    case 'MARK_NO_RESPONSE':
+    case 'MARK_NO_RESPONSE': {
+      const noRespSide = action.side ?? state.turnSide;
       return {
         ...state,
         stealAvailable: true,
+        mainResponderLocked: true,
         responderSide: null,
         responseOutcome: null,
         timer: buildIdleTimer(),
         phaseIndex: Math.max(state.phaseIndex, 3),
-        turnSide: oppositeSide(action.side ?? state.turnSide),
-        message: `${state.teamNames[action.side ?? state.turnSide]} no respondio`,
-        turnLabel: 'Sin respuesta',
+        turnSide: oppositeSide(noRespSide),
+        lostNextAnswerTurn: { ...state.lostNextAnswerTurn, [noRespSide]: true },
+        message: `${state.teamNames[noRespSide]} no respondio — pierde su proximo turno`,
+        turnLabel: 'Sin respuesta — penalizacion activada',
         lastAction: 'MARK_NO_RESPONSE',
       };
+    }
     case 'MARK_STEAL_CORRECT': {
-      const scorerSide = action.side ?? state.responderSide ?? oppositeSide(state.turnSide);
+      const scorerSide = action.side ?? state.responderSide ?? state.turnSide;
       return {
         ...resolveScore(state, scorerSide, `${state.teamNames[scorerSide]} robo bien`),
         questionVisible: true,
         revealAnswer: true,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: scorerSide,
         responseOutcome: buildOutcome(state, 'success', scorerSide),
         timer: buildIdleTimer(),
-        turnSide: scorerSide,
+        turnSide: oppositeSide(scorerSide), // strict alternation after steal correct
         turnLabel: 'Robo correcto',
         lastAction: 'MARK_STEAL_CORRECT',
       };
     }
     case 'MARK_STEAL_WRONG': {
-      const wrongSide = action.side ?? state.responderSide ?? oppositeSide(state.turnSide);
+      const wrongSide = action.side ?? state.responderSide ?? state.turnSide;
       return {
         ...state,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: buildOutcome(state, 'error', wrongSide),
         revealAnswer: true,
         timer: buildIdleTimer(),
-        message: `${state.teamNames[wrongSide]} fallo el robo`,
-        turnLabel: 'Robo incorrecto',
+        turnSide: oppositeSide(wrongSide),
+        lostNextAnswerTurn: { ...state.lostNextAnswerTurn, [wrongSide]: true },
+        message: `${state.teamNames[wrongSide]} fallo el robo — pierde su proximo turno`,
+        turnLabel: 'Robo incorrecto — penalizacion activada',
         lastAction: 'MARK_STEAL_WRONG',
       };
     }
@@ -367,6 +451,8 @@ export function liveReducer(state, action) {
       return {
         ...state,
         stealAvailable: false,
+        mainResponderLocked: false,
+        stealActivatedByTimer: false,
         responderSide: null,
         responseOutcome: null,
         revealAnswer: false,
@@ -409,6 +495,24 @@ export function liveReducer(state, action) {
         responseOutcome: null,
         responderSide: null,
         lastAction: 'CLEAR_RESPONSE_OUTCOME',
+      };
+    case 'SET_DEVICE_PINS':
+      return {
+        ...state,
+        devicePins: {
+          playerA: action.playerA ?? state.devicePins.playerA,
+          playerB: action.playerB ?? state.devicePins.playerB,
+        },
+        lastAction: 'SET_DEVICE_PINS',
+      };
+    case 'CLEAR_LOST_TURN':
+      return {
+        ...state,
+        lostNextAnswerTurn: {
+          ...state.lostNextAnswerTurn,
+          [action.side]: false,
+        },
+        lastAction: 'CLEAR_LOST_TURN',
       };
     case 'SET_CONNECTED_CLIENTS':
       return {
