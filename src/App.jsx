@@ -36,7 +36,14 @@ const SHOW_READY_COUNTDOWN_SECONDS = 10;
 const WHEEL_SPIN_DURATION_MS = 5200;
 const APP_STORAGE_KEY = 'l-imbatiblu:persistent-state:v1';
 const LIVE_STATE_STORAGE_KEY = 'l-imbatiblu:live-state:v1';
-const HOST_SCREENS = new Set(['playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp']);
+const SCREEN_ALIASES = {
+  broadcast: 'hostPanel',
+  showMvp: 'showPanel',
+  competitors: 'playersPanel',
+};
+const PUBLIC_SCREENS = new Set(['menu', 'showPanel', 'playersPanel']);
+const HOST_SCREENS = new Set(['hostPanel', 'playOptions', 'themeWheel', 'players', 'questions', 'final']);
+const KNOWN_SCREENS = new Set(['menu', 'hostPanel', 'showPanel', 'playersPanel', 'playOptions', 'themeWheel', 'players', 'questions', 'final', 'participantLobby']);
 const SHOW_FLOW_STEPS = ['intro', 'standby', 'draw', 'rollers', 'versus', 'ready'];
 
 const initialPlayers = [
@@ -147,11 +154,11 @@ function normalizePlayersCollection(players) {
   return players.map((player) => normalizePlayerAccessCode(player));
 }
 
-const initialQuestions = [
-  { id: 'q1', prompt: '¿En que ano se inauguro el Obelisco?', answer: '1936', theme: 'Historia', difficulty: 'Facil', used: false, approved: true },
-  { id: 'q2', prompt: '¿Que deporte se juega con una pelota y once jugadores por lado?', answer: 'Futbol', theme: 'Deportes', difficulty: 'Facil', used: true, approved: true },
-  { id: 'q3', prompt: '¿Quien dirigio "El Padrino"?', answer: 'Francis Ford Coppola', theme: 'Cine', difficulty: 'Media', used: false, approved: false },
-];
+function normalizeScreenName(value) {
+  if (typeof value !== 'string') return 'menu';
+  const normalized = SCREEN_ALIASES[value] ?? value;
+  return KNOWN_SCREENS.has(normalized) ? normalized : 'menu';
+}
 
 const playFlowSteps = [
   {
@@ -165,7 +172,7 @@ const playFlowSteps = [
     id: 'questions',
     kicker: '01',
     title: 'Preguntas',
-    description: 'Cargá el banco de preguntas, temas y estados de uso para el duelo.',
+    description: 'Administrá el banco privado de preguntas y respuestas de cada categoría.',
     buttonLabel: 'Abrir preguntas',
   },
   {
@@ -176,11 +183,11 @@ const playFlowSteps = [
     buttonLabel: 'Abrir ruleta',
   },
   {
-    id: 'broadcast',
+    id: 'hostPanel',
     kicker: '03',
-    title: 'Pantallas en vivo',
-    description: 'Separá conductor, show y standby con la misma verdad de la partida.',
-    buttonLabel: 'Abrir pantallas',
+    title: 'Panel host',
+    description: 'Controlá el show, el duelo y el puntaje sin mezclarlo con la pantalla pública.',
+    buttonLabel: 'Abrir host',
   },
   {
     id: 'final',
@@ -243,11 +250,11 @@ function readPersistedSessionState() {
   if (session.role !== 'host' && session.role !== 'participant') return null;
   return {
     role: session.role,
-    screen: typeof session.screen === 'string' ? session.screen : 'menu',
+    screen: normalizeScreenName(session.screen),
     broadcastView: typeof session.broadcastView === 'string' ? session.broadcastView : 'show',
     hostUnlocked: Boolean(session.hostUnlocked),
     participantPlayerId: typeof session.participantPlayerId === 'string' ? session.participantPlayerId : null,
-    lastShowScreen: typeof session.lastShowScreen === 'string' ? session.lastShowScreen : null,
+    lastShowScreen: typeof session.lastShowScreen === 'string' ? normalizeScreenName(session.lastShowScreen) : null,
   };
 }
 
@@ -266,7 +273,7 @@ function getInitialRole() {
 function getInitialScreen() {
   const session = readPersistedSessionState();
   if (session?.role === 'participant') return 'participantLobby';
-  if (session?.role === 'host') return typeof session.screen === 'string' ? session.screen : 'menu';
+  if (session?.role === 'host') return normalizeScreenName(session.screen);
   return 'menu';
 }
 
@@ -288,11 +295,7 @@ function getInitialParticipantIdentity() {
 }
 
 function buildInitialQuestions() {
-  const persisted = readPersistedAppState();
-  if (Array.isArray(persisted?.questions) && persisted.questions.length) {
-    return persisted.questions;
-  }
-  return initialQuestions;
+  return [];
 }
 
 function buildInitialWheelThemes() {
@@ -326,7 +329,6 @@ function buildInitialPlayerSortDirection() {
 
 function buildSharedAppState({
   players,
-  questions,
   nextPlayerNumber,
   playerSortKey,
   playerSortDirection,
@@ -336,7 +338,6 @@ function buildSharedAppState({
 }) {
   return {
     players,
-    questions,
     nextPlayerNumber,
     playerSortKey,
     playerSortDirection,
@@ -413,6 +414,8 @@ function App() {
   const [lockedWinnerId, setLockedWinnerId] = useState(null);
 
   const [questions, setQuestions] = useState(buildInitialQuestions);
+  const [questionsReady, setQuestionsReady] = useState(false);
+  const [questionBankStatus, setQuestionBankStatus] = useState('');
   const [wheelThemes, setWheelThemes] = useState(buildInitialWheelThemes);
   const [questionPrompt, setQuestionPrompt] = useState('');
   const [questionAnswer, setQuestionAnswer] = useState('');
@@ -482,10 +485,11 @@ function App() {
   const liveSocketRef = useRef(null);
   const liveStateRef = useRef(liveState);
   const liveDraftHydrationRef = useRef('');
-  const lastShowScreenRef = useRef(readPersistedSessionState()?.lastShowScreen ?? 'showMvp');
+  const lastShowScreenRef = useRef(readPersistedSessionState()?.lastShowScreen ?? 'showPanel');
   const hasLoadedInitialRotationRef = useRef(false);
   const hasHydratedSharedStateRef = useRef(false);
   const lastSharedStateHashRef = useRef('');
+  const lastQuestionBankHashRef = useRef('');
 
   const currentPhase = gamePhases[machine.phaseIndex];
   const liveCurrentPhase = LIVE_PHASES[liveState.phaseIndex];
@@ -597,6 +601,10 @@ function App() {
     }));
     const normalizedQueue = nextPlayers.map((player) => player.id);
     setPlayers(nextPlayers);
+    setQuestions((current) => current.map((question) => ({
+      ...question,
+      used: false,
+    })));
     setRotationQueue(normalizedQueue);
     syncDuelSeats(normalizedQueue);
     setLockedWinnerId(null);
@@ -615,7 +623,7 @@ function App() {
     if (showState.introExiting) {
       patchShowState({ introExiting: false });
     }
-    navigateToScreen('showMvp');
+    navigateToScreen('showPanel');
   };
   const wheelStep = 360 / wheelThemes.length;
   const buildNextWheelSpin = (currentRotation) => {
@@ -699,24 +707,24 @@ function App() {
   }, [liveState.currentTheme]);
 
   useEffect(() => {
-    const isShowSurfaceActive = screen === 'showMvp' || (screen === 'broadcast' && broadcastView === 'show');
+    const isShowSurfaceActive = screen === 'showPanel';
     if (!isShowSurfaceActive) return;
     if (!liveState.buzzToken || liveState.buzzToken === lastBuzzTokenRef.current) return;
     lastBuzzTokenRef.current = liveState.buzzToken;
     const audio = new Audio(buzzerSoundUrl);
     audio.volume = 0.95;
     void audio.play().catch(() => {});
-  }, [broadcastView, liveState.buzzToken, screen]);
+  }, [liveState.buzzToken, screen]);
 
   useEffect(() => {
-    const isShowSurfaceActive = screen === 'showMvp' || (screen === 'broadcast' && broadcastView === 'show');
+    const isShowSurfaceActive = screen === 'showPanel';
     const outcomeToken = liveState.responseOutcome?.token ?? null;
     if (!isShowSurfaceActive || !outcomeToken || outcomeToken === lastOutcomeTokenRef.current) return;
     lastOutcomeTokenRef.current = outcomeToken;
     const audio = new Audio(liveState.responseOutcome.status === 'success' ? rightSoundUrl : wrongSoundUrl);
     audio.volume = 0.95;
     void audio.play().catch(() => {});
-  }, [broadcastView, liveState.responseOutcome?.status, liveState.responseOutcome?.token, screen]);
+  }, [liveState.responseOutcome?.status, liveState.responseOutcome?.token, screen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -776,7 +784,7 @@ function App() {
 
   useEffect(() => {
     if (appRole !== 'host') return;
-    if (screen !== 'broadcast') return;
+    if (screen !== 'hostPanel') return;
     if (!showDuelLaunched) return;
     if (!liveState.currentQuestionId) return;
     setLiveQuestionDraft(liveState.question);
@@ -928,14 +936,20 @@ function App() {
     return currentThemeQuestions.filter((question) => question.approved && !question.used);
   }, [currentThemeQuestions]);
   const nextPlayableQuestion = currentThemePlayableQuestions[0] ?? null;
+  const hasPreparedLiveQuestion = Boolean(
+    liveState.currentQuestionId &&
+    !liveState.questionVisible &&
+    !liveState.duelFinished
+  );
   const navigateToScreen = (nextScreen) => {
-    if (!isScreenAllowedForRole(nextScreen)) return;
-    if (nextScreen === screen) return;
-    if (nextScreen !== 'menu' && HOST_SCREENS.has(nextScreen)) {
-      lastShowScreenRef.current = nextScreen;
+    const normalizedScreen = normalizeScreenName(nextScreen);
+    if (!isScreenAllowedForRole(normalizedScreen)) return;
+    if (normalizedScreen === screen) return;
+    if (normalizedScreen !== 'menu' && HOST_SCREENS.has(normalizedScreen)) {
+      lastShowScreenRef.current = normalizedScreen;
     }
-    window.history.pushState({ screen: nextScreen }, '', `#${nextScreen}`);
-    setScreen(nextScreen);
+    window.history.pushState({ screen: normalizedScreen }, '', `#${normalizedScreen}`);
+    setScreen(normalizedScreen);
   };
 
   const goBackScreen = () => {
@@ -945,7 +959,7 @@ function App() {
   const isScreenAllowedForRole = (nextScreen) => {
     if (appRole === 'host') return true;
     if (appRole === 'participant') return nextScreen === 'participantLobby';
-    return false;
+    return PUBLIC_SCREENS.has(nextScreen);
   };
 
   const openRoleStep = (nextStep) => {
@@ -980,8 +994,8 @@ function App() {
     setEntryHostPassword('');
     setEntryParticipantCode('');
     setEntryParticipantError('');
-    window.history.replaceState({ screen: 'menu' }, '', '#menu');
-    setScreen('menu');
+    window.history.replaceState({ screen: 'hostPanel' }, '', '#hostPanel');
+    setScreen('hostPanel');
   };
 
   const submitEntryHostPassword = () => {
@@ -1028,41 +1042,28 @@ function App() {
 
   const requestHostAccess = (target) => {
     const trimmedPassword = hostPassword.trim();
-    setHostAccessTarget(target);
+    const normalizedTarget = target === 'settings' ? 'settings' : 'hostPanel';
+    setHostAccessTarget(normalizedTarget);
     setHostAuthError('');
     setHostAuthAttempt('');
 
     if (!trimmedPassword) {
       setHostUnlocked(true);
-      if (target === 'settings') {
+      if (normalizedTarget === 'settings') {
         setSettingsOpen(true);
-      } else if (target === 'showMvp') {
-        if (showSessionInProgress) {
-          resumeShowSession();
-        } else {
-          resetShowPresentation();
-          navigateToScreen('showMvp');
-        }
       } else {
         setPlayFlowStep(0);
-        navigateToScreen('playOptions');
+        navigateToScreen('hostPanel');
       }
       return;
     }
 
     if (hostUnlocked) {
-      if (target === 'settings') {
+      if (normalizedTarget === 'settings') {
         setSettingsOpen(true);
-      } else if (target === 'showMvp') {
-        if (showSessionInProgress) {
-          resumeShowSession();
-        } else {
-          resetShowPresentation();
-          navigateToScreen('showMvp');
-        }
       } else {
         setPlayFlowStep(0);
-        navigateToScreen('playOptions');
+        navigateToScreen('hostPanel');
       }
       return;
     }
@@ -1086,19 +1087,12 @@ function App() {
       setHostAuthOpen(false);
       setHostAuthError('');
       const target = hostAccessTarget;
-      setHostAccessTarget('playOptions');
+      setHostAccessTarget('hostPanel');
       if (target === 'settings') {
         setSettingsOpen(true);
-      } else if (target === 'showMvp') {
-        if (showSessionInProgress) {
-          resumeShowSession();
-        } else {
-          resetShowPresentation();
-          navigateToScreen('showMvp');
-        }
       } else {
         setPlayFlowStep(0);
-        navigateToScreen('playOptions');
+        navigateToScreen('hostPanel');
       }
       return;
     }
@@ -1175,24 +1169,99 @@ function App() {
   const questionCategories = useMemo(() => {
     const categories = new Set([...wheelThemes.map((theme) => theme.label), ...questions.map((question) => question.theme), questionTheme].filter(Boolean));
     return [...categories];
-  }, [questions, questionTheme]);
+  }, [questions, questionTheme, wheelThemes]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (appRole !== 'host') return undefined;
+
+    const loadPrivateQuestionBank = async () => {
+      try {
+        const response = await fetch('/api/host/questions');
+        if (!response.ok) {
+          throw new Error('No se pudo abrir el banco privado de preguntas.');
+        }
+
+        const payload = await response.json();
+        const nextQuestions = Array.isArray(payload?.questions) ? payload.questions : [];
+        const nextHash = JSON.stringify(nextQuestions);
+
+        if (cancelled) return;
+        lastQuestionBankHashRef.current = nextHash;
+        setQuestions(nextQuestions);
+        setQuestionsReady(true);
+        setQuestionBankStatus('Banco privado cargado solo en esta PC host.');
+      } catch (error) {
+        if (cancelled) return;
+        setQuestionsReady(true);
+        setQuestionBankStatus(error instanceof Error ? error.message : 'No se pudo cargar el banco privado.');
+      }
+    };
+
+    loadPrivateQuestionBank();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appRole]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (appRole !== 'host' || !questionsReady) return undefined;
+
+    const nextHash = JSON.stringify(questions);
+    if (nextHash === lastQuestionBankHashRef.current) return undefined;
+
+    const syncPrivateQuestionBank = async () => {
+      try {
+        const response = await fetch('/api/host/questions', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ questions }),
+        });
+
+        if (!response.ok) {
+          throw new Error('No se pudieron guardar las preguntas privadas.');
+        }
+
+        const payload = await response.json();
+        const persistedQuestions = Array.isArray(payload?.questions) ? payload.questions : questions;
+        const persistedHash = JSON.stringify(persistedQuestions);
+        if (cancelled) return;
+        lastQuestionBankHashRef.current = persistedHash;
+        setQuestions(persistedQuestions);
+        setQuestionBankStatus('Banco privado guardado en la PC host.');
+      } catch (error) {
+        if (cancelled) return;
+        setQuestionBankStatus(error instanceof Error ? error.message : 'No se pudieron guardar las preguntas privadas.');
+      }
+    };
+
+    syncPrivateQuestionBank();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appRole, questions, questionsReady]);
 
   useEffect(() => {
     setWheelEditDraft(wheelThemes.map((theme) => ({ ...theme })));
   }, [wheelThemes]);
   useEffect(() => {
-    const initialHash = window.location.hash.replace('#', '');
-    const initialScreen = ['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp', 'competitors', 'participantLobby'].includes(initialHash)
-      ? initialHash
-      : 'menu';
+    const initialHash = normalizeScreenName(window.location.hash.replace('#', ''));
+    const initialScreen = initialHash || 'menu';
     if (initialScreen !== screen) {
       setScreen(initialScreen);
     }
     window.history.replaceState({ screen: initialScreen }, '', `#${initialScreen}`);
 
     const handlePopState = (event) => {
-      const nextScreen = event.state?.screen ?? (window.location.hash.replace('#', '') || 'menu');
-      if (['menu', 'playOptions', 'themeWheel', 'players', 'questions', 'broadcast', 'final', 'showMvp', 'competitors', 'participantLobby'].includes(nextScreen)) {
+      const nextScreen = normalizeScreenName(event.state?.screen ?? (window.location.hash.replace('#', '') || 'menu'));
+      if (KNOWN_SCREENS.has(nextScreen)) {
         setScreen(nextScreen);
       }
     };
@@ -1252,7 +1321,6 @@ function App() {
   useEffect(() => {
     writePersistedAppState({
       players,
-      questions,
       nextPlayerNumber,
       playerSortKey,
       playerSortDirection,
@@ -1269,14 +1337,13 @@ function App() {
         lastShowScreen: lastShowScreenRef.current,
       } : null,
     });
-  }, [appRole, broadcastView, duelSeats, hostPassword, hostUnlocked, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, questions, rotationQueue, screen, wheelThemes]);
+  }, [appRole, broadcastView, duelSeats, hostPassword, hostUnlocked, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, rotationQueue, screen, wheelThemes]);
 
   useEffect(() => {
     if (!hasHydratedSharedStateRef.current || !liveSocketRef.current) return;
 
     const sharedAppState = buildSharedAppState({
       players,
-      questions,
       nextPlayerNumber,
       playerSortKey,
       playerSortDirection,
@@ -1292,7 +1359,7 @@ function App() {
       type: 'SYNC_APP_STATE',
       payload: sharedAppState,
     });
-  }, [players, questions, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, wheelThemes]);
+  }, [players, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, wheelThemes]);
 
   useEffect(() => {
     const serverUrl =
@@ -1329,7 +1396,6 @@ function App() {
         if (nextHash !== lastSharedStateHashRef.current) {
           lastSharedStateHashRef.current = nextHash;
           if (Array.isArray(sharedAppState.players)) setPlayers(normalizePlayersCollection(sharedAppState.players));
-          if (Array.isArray(sharedAppState.questions)) setQuestions(sharedAppState.questions);
           if (typeof sharedAppState.nextPlayerNumber === 'number' && sharedAppState.nextPlayerNumber > 0) setNextPlayerNumber(sharedAppState.nextPlayerNumber);
           if (['playerNumber', 'name', 'points'].includes(sharedAppState.playerSortKey)) setPlayerSortKey(sharedAppState.playerSortKey);
           if (sharedAppState.playerSortDirection === 'desc' || sharedAppState.playerSortDirection === 'asc') setPlayerSortDirection(sharedAppState.playerSortDirection);
@@ -1370,7 +1436,7 @@ function App() {
       showReadyIntervalRef.current = null;
     }
 
-    if (screen !== 'showMvp') return undefined;
+    if (screen !== 'showPanel') return undefined;
 
     if (showFlowStep === 'ready') {
       setShowReadyCountdown(SHOW_READY_COUNTDOWN_SECONDS);
@@ -1401,14 +1467,14 @@ function App() {
   }, [screen, showFlowStep]);
 
   useEffect(() => {
-    if (screen !== 'showMvp' || showFlowStep !== 'intro') return undefined;
+    if (screen !== 'showPanel' || showFlowStep !== 'intro') return undefined;
     if (!showIntroExiting) return undefined;
     setShowIntroExiting(false);
     return undefined;
   }, [screen, showFlowStep, showIntroExiting]);
 
   useEffect(() => {
-    if (screen !== 'showMvp' || showFlowStep !== 'draw' || showSpinnerActive) return undefined;
+    if (screen !== 'showPanel' || showFlowStep !== 'draw' || showSpinnerActive) return undefined;
     if (!showDrawNeedsSettleRef.current) return undefined;
     if (!showDuelSelection.leftId || !showDuelSelection.rightId) return undefined;
 
@@ -2020,6 +2086,22 @@ function App() {
     prepareLiveQuestion(nextPlayableQuestion, nextTurnSide);
   };
 
+  const rerollPreparedQuestion = () => {
+    if (liveState.duelFinished || liveState.questionVisible || !liveState.currentQuestionId) return;
+
+    const currentQuestionId = liveState.currentQuestionId;
+    const alternativeQuestions = currentThemeQuestions.filter((question) => question.approved && question.id !== currentQuestionId && !question.used);
+    if (!alternativeQuestions.length) return;
+
+    updateQuestion(currentQuestionId, (current) => ({
+      ...current,
+      used: false,
+    }));
+
+    const nextQuestion = alternativeQuestions[Math.floor(Math.random() * alternativeQuestions.length)];
+    prepareLiveQuestion(nextQuestion, liveState.turnSide ?? resolveNextQuestionTurnSide(liveState));
+  };
+
   const revealCurrentOrNextLiveQuestion = () => {
     const hasPreparedHiddenQuestion = Boolean(
       !liveState.questionVisible &&
@@ -2050,8 +2132,7 @@ function App() {
       });
     }
     patchShowState({ duelLaunched: true });
-    setBroadcastView('show');
-    navigateToScreen('broadcast');
+    navigateToScreen('hostPanel');
   };
 
   const openRevealAnswerConfirm = () => {
@@ -2203,20 +2284,20 @@ function App() {
     }, WHEEL_SPIN_DURATION_MS + 80);
   };
 
-  const canCompetitorBuzz = (side) => {
-    if (!liveState.questionVisible) return false;
-    if (!liveState.timer.running) return false;
-    if (liveState.revealAnswer || liveState.duelFinished) return false;
-    if (side === liveTurnSide) {
-      return !liveState.responderSide;
-    }
-    return liveState.timer.mode === 'response' && liveState.timer.seconds <= 5 && (
-      (liveState.responseOutcome?.status === 'error' && liveState.stealAvailable) ||
-      (!liveState.responderSide && !liveState.responseOutcome)
-    );
-  };
-
   const renderAccessGate = () => (
+    (() => {
+      const participantEntryOnly = screen === 'playersPanel';
+      const hostEntryOnly = screen === 'hostPanel';
+      const forcedStep = participantEntryOnly ? 'participant' : hostEntryOnly ? 'host' : entryStep;
+      const handleAccessBack = () => {
+        if (participantEntryOnly || hostEntryOnly) {
+          navigateToScreen('menu');
+          return;
+        }
+        openRoleStep('chooser');
+      };
+
+      return (
     <main className="app-shell access-shell">
       <div className="grid-overlay" />
       <div className="blob blob-one" />
@@ -2224,17 +2305,22 @@ function App() {
       <div className="blob blob-three" />
       <section className="hero-frame auth-frame">
         <div className="auth-hero">
-          <p className="sponsor-line">ACCESO PRIVADO</p>
-          <h1 className="play-title">¿Qué sos?</h1>
-          <p className="auth-lead">Elegí tu perfil para abrir la sala correcta. El host entra con contraseña y cada participante entra con su propio código.</p>
+          <p className="sponsor-line">{participantEntryOnly ? 'PANEL PARTICIPANTE' : hostEntryOnly ? 'PANEL HOST' : 'ACCESO PRIVADO'}</p>
+          <h1 className="play-title">{participantEntryOnly ? 'Entrá como participante' : hostEntryOnly ? 'Entrá como host' : '¿Qué sos?'}</h1>
+          <p className="auth-lead">{participantEntryOnly ? 'Responder y robar viven acá mismo. Elegí tu jugador y validá tu código.' : hostEntryOnly ? 'Ingresá la contraseña para abrir el control completo del programa.' : 'Elegí tu perfil para abrir la sala correcta. El host entra con contraseña y cada participante entra con su propio código.'}</p>
         </div>
 
-        {entryStep === 'chooser' ? (
+        {forcedStep === 'chooser' ? (
           <div className="auth-choice-grid">
             <button className="auth-choice-card" type="button" onClick={() => openRoleStep('host')}>
               <span className="show-badge">HOST</span>
-              <strong>Control total</strong>
-              <p>Accedé al tablero, los jugadores y las pantallas en vivo.</p>
+              <strong>Panel host</strong>
+              <p>Accedé al control del show, la biblioteca privada y la operación del duelo.</p>
+            </button>
+            <button className="auth-choice-card" type="button" onClick={() => navigateToScreen('showPanel')}>
+              <span className="show-badge">SHOW</span>
+              <strong>Pantalla pública</strong>
+              <p>Abrí la vista limpia para proyección o pantalla principal.</p>
             </button>
             <button className="auth-choice-card" type="button" onClick={() => openRoleStep('participant')}>
               <span className="show-badge is-playerB">PARTICIPANTE</span>
@@ -2244,9 +2330,9 @@ function App() {
           </div>
         ) : null}
 
-        {entryStep === 'host' ? (
+        {forcedStep === 'host' ? (
           <div className="auth-form-shell">
-            <button className="back-button auth-back-button" type="button" onClick={() => openRoleStep('chooser')}>← Volver</button>
+            <button className="back-button auth-back-button" type="button" onClick={handleAccessBack}>← Volver</button>
             <div className="host-password-box">
               <strong>Acceso de host</strong>
               <p>Ingresá la contraseña para desbloquear la app completa.</p>
@@ -2266,12 +2352,12 @@ function App() {
           </div>
         ) : null}
 
-        {entryStep === 'participant' ? (
+        {forcedStep === 'participant' ? (
           <div className="auth-form-shell">
-            <button className="back-button auth-back-button" type="button" onClick={() => openRoleStep('chooser')}>← Volver</button>
+            <button className="back-button auth-back-button" type="button" onClick={handleAccessBack}>← Volver</button>
             <div className="host-password-box">
               <strong>Acceso participante</strong>
-              <p>Elegí tu jugador y escribí el código que te dieron para entrar a tu vida dentro del juego.</p>
+              <p>Elegí tu jugador y escribí el código. Desde esta misma pantalla vas a responder o robar cuando te toque.</p>
               <label className="auth-field">
                 <span>¿Quién sos?</span>
                 <select
@@ -2314,6 +2400,8 @@ function App() {
         </div>
       </section>
     </main>
+      );
+    })()
   );
 
   const renderParticipantLobby = () => (
@@ -2471,7 +2559,7 @@ function App() {
 
 
   const renderMenu = () => (
-    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLÚ</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => requestHostAccess('playOptions')}>HOSTEAR</button><button className="secondary-action" type="button" onClick={() => requestHostAccess('showMvp')}>{showMenuButtonLabel}</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
+    <section className="hero-frame"><div className="top-ribbon"><span className="ribbon-pill" /><span className="ribbon-pill ribbon-pill-mid" /><span className="ribbon-pill ribbon-pill-lime" /></div><p className="sponsor-line">AUSPICIADO POR SDJ</p><div className="title-card"><div className="title-card-back" /><h1 className="brand-title">L'IMBATIBLÚ</h1><p className="brand-subtitle">Gestor de trivia live</p><div className="status-row"><span className="status-dot" /><span>Sala preparada para arrancar</span></div></div><div className="cta-panel"><button className="primary-action" type="button" onClick={() => navigateToScreen('hostPanel')}>HOST</button><button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>{showMenuButtonLabel}</button><button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>PARTICIPANTE</button></div><div className="corner-deco corner-star">✳</div><div className="corner-deco corner-note">★</div><div className="corner-deco corner-arrow">➜</div></section>
   );
 
   const renderPlayOptions = () => (
@@ -2511,6 +2599,9 @@ function App() {
             <p>{playFlowSteps[playFlowStep].description}</p>
             <div className="play-flow-actions">
               <button className="primary-action" type="button" onClick={() => navigateToScreen(playFlowSteps[playFlowStep].id)}>{playFlowSteps[playFlowStep].buttonLabel}</button>
+              <button className="secondary-action" type="button" onClick={() => navigateToScreen('hostPanel')}>Panel host</button>
+              <button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>Panel show</button>
+              <button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>Panel participantes</button>
               <button className="secondary-action action-danger" type="button" onClick={resetHostSession}>Reiniciar todo</button>
               <button className="secondary-action" type="button" onClick={() => setPlayFlowStep((current) => Math.max(0, current - 1))} disabled={playFlowStep === 0}>Paso anterior</button>
               <button className="secondary-action" type="button" onClick={() => setPlayFlowStep((current) => Math.min(playFlowSteps.length - 1, current + 1))} disabled={playFlowStep === playFlowSteps.length - 1}>Paso siguiente</button>
@@ -2535,6 +2626,14 @@ function App() {
             <div className="play-share-url-box">
               <span>URL local</span>
               <strong>{shareUrl || 'Esperando enlace...'}</strong>
+            </div>
+            <div className="play-share-url-box">
+              <span>URL show</span>
+              <strong>{shareUrl ? `${shareUrl}/#showPanel` : 'Esperando enlace...'}</strong>
+            </div>
+            <div className="play-share-url-box">
+              <span>URL participantes</span>
+              <strong>{shareUrl ? `${shareUrl}/#playersPanel` : 'Esperando enlace...'}</strong>
             </div>
             <div className="play-share-actions">
               <button
@@ -3000,6 +3099,11 @@ function App() {
         <div className="summary-card"><span>Total</span><strong>{questions.length}</strong></div>
         <div className="summary-card"><span>Aprobadas</span><strong>{questions.filter((question) => question.approved).length}</strong></div>
         <div className="summary-card"><span>Usadas</span><strong>{questions.filter((question) => question.used).length}</strong></div>
+      </div>
+
+      <div className="players-rule">
+        <strong>Banco privado:</strong>
+        <span>{questionsReady ? questionBankStatus || 'Guardado sólo en la PC host.' : 'Cargando preguntas privadas...'}</span>
       </div>
 
       <div className="questions-layout">
@@ -3519,25 +3623,29 @@ function App() {
 
   const renderBroadcast = () => (
     <section className="hero-frame broadcast-frame">
-      <div className="match-header broadcast-header-minimal">
+      <div className="play-header broadcast-header-minimal">
         <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
-      </div>
-      <div className="broadcast-tabs" role="tablist" aria-label="Vistas en vivo">
-        <button className={`broadcast-tab ${broadcastView === 'conductor' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('conductor')}>Host</button>
-        <button className={`broadcast-tab ${broadcastView === 'show' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('show')}>Show</button>
-        <button className={`broadcast-tab ${broadcastView === 'score' ? 'is-active' : ''}`} type="button" onClick={() => setBroadcastView('score')}>Puntaje</button>
+        <div className="play-header-copy">
+          <p className="sponsor-line">HOST</p>
+          <h1 className="play-title">Panel de control</h1>
+        </div>
+        <div className="cta-panel">
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playOptions')}>Setup</button>
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>Show</button>
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>Participantes</button>
+        </div>
       </div>
       <div className="broadcast-connection">
         <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
         <span className="machine-chip secondary">{liveState.connectedClients} clientes</span>
         <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
+        <span className="machine-chip secondary">{questionBankStatus || 'Banco privado local'}</span>
       </div>
-      {broadcastView === 'conductor' ? (
-        !showDuelLaunched ? (
-          <div className="broadcast-grid host-grid">
-            {renderBroadcastShowHostActions()}
-          </div>
-        ) : (
+      {!showDuelLaunched ? (
+        <div className="broadcast-grid host-grid">
+          {renderBroadcastShowHostActions()}
+        </div>
+      ) : (
         <div className="broadcast-grid host-grid host-grid-single">
           <section className="broadcast-card conductor-card conductor-card-wide">
             <div className="broadcast-card-head">
@@ -3577,9 +3685,10 @@ function App() {
             <div className="broadcast-actions host-action-grid">
               <div className="host-action-row">
                 <button className="primary-action" type="button" onClick={revealCurrentOrNextLiveQuestion} disabled={hostMustAdvanceDuel || liveState.questionVisible}>Revelar pregunta</button>
-                <button className="secondary-action" type="button" onClick={openRevealAnswerConfirm} disabled={!liveState.questionVisible || liveState.revealAnswer || liveState.duelFinished}>Revelar respuesta</button>
+                <button className="secondary-action" type="button" onClick={rerollPreparedQuestion} disabled={!hasPreparedLiveQuestion || currentThemePlayableQuestions.length === 0}>Re-roll pregunta</button>
               </div>
               <div className="host-action-row">
+                <button className="secondary-action" type="button" onClick={openRevealAnswerConfirm} disabled={!liveState.questionVisible || liveState.revealAnswer || liveState.duelFinished}>Revelar respuesta</button>
                 <button className="secondary-action action-success" type="button" onClick={() => dispatchLiveAction({ type: liveState.responderSide && liveState.responderSide !== liveTurnSide ? 'MARK_STEAL_CORRECT' : 'MARK_RESPONSE_CORRECT', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta correcta</button>
                 <button className="secondary-action action-danger" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta incorrecta</button>
               </div>
@@ -3591,78 +3700,9 @@ function App() {
               <span> {hostMustAdvanceDuel ? 'El duelo ya terminó. Tocá `Siguiente duelo` antes de cargar otra pregunta.' : liveState.message}</span>
             </div>
           </section>
-        </div>
-        )
-      ) : broadcastView === 'show' ? (
-        renderBroadcastShowMirror()
-      ) : broadcastView === 'score' ? (
-        <div className="broadcast-grid host-grid host-grid-single">
           {renderBroadcastScoreTab()}
         </div>
-      ) : null}
-    </section>
-  );
-
-  const renderCompetitors = () => (
-    <section className="hero-frame competitors-frame">
-      <div className="play-header">
-        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
-        <div className="play-header-copy">
-          <p className="sponsor-line">COMPETIDORES</p>
-          <h1 className="play-title">Panel de respuesta</h1>
-        </div>
-      </div>
-      <div className="broadcast-connection">
-        <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
-        <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
-      </div>
-      <section className="broadcast-card competitors-stage">
-        <div className="competitors-status">
-          {!liveState.questionVisible ? (
-            <>
-              <span className="show-badge">ESPERA</span>
-              <h2>Pregunta oculta</h2>
-              <p>El host va a revelar la pregunta desde su panel. Cuando aparezca, tocá responder.</p>
-            </>
-          ) : liveState.responseOutcome ? (
-            <>
-              <span className={`show-badge ${liveState.responseOutcome.status === 'success' ? 'is-success' : 'is-error'}`}>{liveState.responseOutcome.status === 'success' ? 'ACIERTO' : 'ERROR'}</span>
-              <h2>{liveOutcomeName}</h2>
-              <p>{liveState.responseOutcome.status === 'success' ? 'Respuesta validada por el host.' : 'El host marcó la jugada como incorrecta.'}</p>
-            </>
-          ) : liveState.responderSide ? (
-            <>
-              <span className={`show-badge is-${liveState.responderSide}`}>RESPONDE</span>
-              <h2>{liveResponderName}</h2>
-              <p>{liveResponderName} ya tomó la palabra. El resto espera resolución del host.</p>
-            </>
-          ) : (
-            <>
-              <span className="show-badge">AL AIRE</span>
-              <h2>{liveStealEnabled ? `¡Robo habilitado para ${liveStealName}!` : '¡A responder!'}</h2>
-              <p>{liveStealEnabled ? 'El botón de robo ya está activo. Si alguien toca, el reloj se congela.' : 'La mano original puede responder; el robo se habilita en los últimos 5 segundos.'}</p>
-            </>
-          )}
-        </div>
-        <div className="competitor-actions-grid">
-          {[
-            { side: 'playerA', player: duelSeatPlayerA, fallbackTheme: duelSeatThemeA },
-            { side: 'playerB', player: duelSeatPlayerB, fallbackTheme: duelSeatThemeB },
-          ].map(({ side, player, fallbackTheme }) => (
-            <button
-              key={side}
-              className="competitor-action-card player-theme-surface"
-              type="button"
-              onClick={() => dispatchLiveAction({ type: 'PLAYER_BUZZ_IN', side })}
-              disabled={!canCompetitorBuzz(side)}
-              style={getPlayerThemeStyle(player ?? { playerNumber: side === 'playerA' ? 1 : 2, themeId: fallbackTheme.id })}
-            >
-              <strong>{player?.name ?? (side === 'playerA' ? 'Jugador 01' : 'Jugador 02')}</strong>
-              <em>{canCompetitorBuzz(side) ? 'RESPONDER' : liveState.responderSide === side ? 'TENÉS LA PALABRA' : 'ESPERA'}</em>
-            </button>
-          ))}
-        </div>
-      </section>
+      )}
     </section>
   );
 
@@ -3736,6 +3776,18 @@ function App() {
     <section className="hero-frame match-frame"><div className="match-header"><button className="back-button" type="button" onClick={goBackScreen}>← Volver</button><div className="match-header-copy"><p className="sponsor-line">MOTOR DE PARTIDA</p><h1 className="play-title">Estados del juego</h1></div></div><div className="machine-panel"><div className="machine-status"><span className="machine-chip">{machine.activeState}</span><span className="machine-chip secondary">Duelo {machine.currentDuel}</span></div><div className="machine-current"><h2>{currentPhase.title}</h2><p>{currentPhase.description}</p></div><div className="phase-stepper">{gamePhases.map((phase, index) => <button key={phase.id} type="button" className={`phase-step ${index === machine.phaseIndex ? 'is-active' : ''}`} onClick={() => dispatch({ type: 'GOTO_PHASE', index })}><span>{String(index + 1).padStart(2, '0')}</span><strong>{phase.title}</strong></button>)}</div><div className="machine-actions"><button className="secondary-action" type="button" onClick={() => dispatch({ type: 'PREV_PHASE' })}>Estado anterior</button><button className="primary-action" type="button" onClick={() => dispatch({ type: 'NEXT_PHASE' })}>Siguiente estado</button><button className="secondary-action" type="button" onClick={() => dispatch({ type: 'RESET_FLOW' })}>Reiniciar</button></div><div className="duel-timer-panel"><div className="duel-timer-head"><span className="wheel-result-label">Reloj de duelo</span><strong>{duelTimer.label}</strong></div><div className={`duel-timer-display ${duelTimer.running ? 'is-running' : ''}`}>{String(duelTimer.seconds).padStart(2, '0')}</div><div className="duel-timer-actions"><button className="secondary-action" type="button" onClick={() => startDuelTimer('response', 5, 'Respuesta')}>Respuesta 5s</button><button className="secondary-action" type="button" onClick={() => startDuelTimer('steal', 3, 'Robo')}>Robo 3s</button><button className="secondary-action" type="button" onClick={() => { clearDuelTimer(); setDuelTimer({ label: 'Listo', seconds: 0, running: false, mode: 'idle' }); }}>Reset reloj</button></div></div></div></section>
   );
 
+  if (!appRole && screen === 'showPanel') {
+    return (
+      <main className="app-shell">
+        <div className="grid-overlay" />
+        <div className="blob blob-one" />
+        <div className="blob blob-two" />
+        <div className="blob blob-three" />
+        {renderShowMvp()}
+      </main>
+    );
+  }
+
   if (!appRole) {
     return renderAccessGate();
   }
@@ -3759,13 +3811,13 @@ function App() {
       <div className="blob blob-two" />
       <div className="blob blob-three" />
       {screen === 'menu' && renderMenu()}
+      {screen === 'hostPanel' && renderBroadcast()}
       {screen === 'playOptions' && renderPlayOptions()}
-      {screen === 'showMvp' && renderShowMvp()}
+      {screen === 'showPanel' && renderShowMvp()}
       {screen === 'themeWheel' && renderThemeWheel()}
       {screen === 'players' && renderPlayers()}
       {screen === 'questions' && renderQuestions()}
-      {screen === 'broadcast' && renderBroadcast()}
-      {screen === 'competitors' && renderCompetitors()}
+      {screen === 'playersPanel' && renderAccessGate()}
       {screen === 'final' && renderFinal()}
       {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACION</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuracion">×</button></div><div className="settings-list"><div className="setting-row"><span>Duracion de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuacion</span><strong>Clasico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
       {wheelEditOpen ? (
