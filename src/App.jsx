@@ -32,6 +32,7 @@ const IMBATIBLE_BONUS_POINTS = 4;
 const DUEL_DRAW_SPIN_MS = 8000;
 const DUEL_DRAW_ITEM_HEIGHT = 44;
 const DUEL_DRAW_VIEWPORT_HEIGHT = 244;
+const SHOW_ROLLER_REPEAT_COUNT = 7;
 const SHOW_READY_COUNTDOWN_SECONDS = 10;
 const WHEEL_SPIN_DURATION_MS = 5200;
 const APP_STORAGE_KEY = 'l-imbatiblu:persistent-state:v1';
@@ -638,8 +639,11 @@ function App() {
   };
   const wheelBackground = useMemo(() => buildWheelGradient(wheelThemes), [wheelThemes]);
   const liveTurnSide = liveState.turnSide ?? 'playerA';
-  const liveStealSide = liveTurnSide === 'playerA' ? 'playerB' : 'playerA';
-  const liveTurnName = liveState.teamNames[liveTurnSide];
+  const liveDisplayTurnSide = liveState.responseOutcome?.status === 'success' && liveState.turnLabel === 'Robo correcto'
+    ? (liveState.responseOutcome.side ?? liveTurnSide)
+    : liveTurnSide;
+  const liveStealSide = liveDisplayTurnSide === 'playerA' ? 'playerB' : 'playerA';
+  const liveTurnName = liveState.teamNames[liveDisplayTurnSide];
   const liveStealName = liveState.teamNames[liveStealSide];
   const liveDuelWinnerName = liveState.duelWinnerSide ? liveState.teamNames[liveState.duelWinnerSide] : null;
   const liveResponderName = liveState.responderSide ? liveState.teamNames[liveState.responderSide] : null;
@@ -648,19 +652,15 @@ function App() {
   const liveBuzzDisplayName = liveBuzzDisplaySide ? liveState.teamNames[liveBuzzDisplaySide] : null;
   const liveStealEnabled = liveState.questionVisible
     && liveState.timer.running
-    && liveState.timer.mode === 'response'
-    && liveState.timer.seconds <= 5
-    && !liveState.duelFinished
-    && (
-      (liveState.responseOutcome?.status === 'error' && liveState.stealAvailable)
-      || (!liveState.responderSide && !liveState.responseOutcome)
-    );
-  const liveTimerDanger = liveState.timer.running && liveState.timer.mode === 'response' && liveState.timer.seconds <= 5;
+    && (liveState.timer.mode === 'steal' || (liveState.timer.mode === 'response' && liveState.timer.seconds <= 8))
+    && !liveState.responderSide
+    && !liveState.duelFinished;
+  const liveTimerDanger = liveState.timer.running && liveState.timer.seconds <= 5;
   const showSessionInProgress = Boolean(showState.sessionStarted) || isShowInProgress(showState);
   const showMenuButtonLabel = showSessionInProgress ? 'VOLVER AL SHOW' : 'COMENZAR SHOW';
 
   useEffect(() => {
-    if (liveState.responseOutcome?.status !== 'error') {
+    if (liveState.responseOutcome?.status !== 'error' || liveState.stealAvailable) {
       if (incorrectCountdownIntervalRef.current) {
         window.clearInterval(incorrectCountdownIntervalRef.current);
         incorrectCountdownIntervalRef.current = null;
@@ -798,8 +798,8 @@ function App() {
   const liveOutcomePlayer = liveState.responseOutcome?.side === 'playerA' ? duelSeatPlayerA : liveState.responseOutcome?.side === 'playerB' ? duelSeatPlayerB : null;
   const duelSeatThemeA = getPlayerThemeById(duelSeatPlayerA?.themeId, duelSeatPlayerA?.playerNumber);
   const duelSeatThemeB = getPlayerThemeById(duelSeatPlayerB?.themeId, duelSeatPlayerB?.playerNumber);
-  const liveTurnPlayer = liveTurnSide === 'playerA' ? duelSeatPlayerA : duelSeatPlayerB;
-  const liveTurnTheme = liveTurnSide === 'playerA' ? duelSeatThemeA : duelSeatThemeB;
+  const liveTurnPlayer = liveDisplayTurnSide === 'playerA' ? duelSeatPlayerA : duelSeatPlayerB;
+  const liveTurnTheme = liveDisplayTurnSide === 'playerA' ? duelSeatThemeA : duelSeatThemeB;
   const duelDrawBlockedPlayerId = duelSeatPlayerA?.winStreak > 0 ? duelSeatPlayerA.id : duelSeatPlayerB?.winStreak > 0 ? duelSeatPlayerB.id : null;
   const duelDrawEligiblePlayers = useMemo(() => {
     return players.filter((player) => player.active && !player.imbatible && player.id !== duelDrawBlockedPlayerId);
@@ -828,9 +828,8 @@ function App() {
   const participantOpponentSide = participantDuelSide === 'playerA' ? 'playerB' : participantDuelSide === 'playerB' ? 'playerA' : null;
   const participantOpponent = participantOpponentSide === 'playerA' ? activeDuelParticipantA : participantOpponentSide === 'playerB' ? activeDuelParticipantB : null;
   const participantIsActiveInShow = Boolean(currentParticipant && participantDuelSide);
-  const participantIsTurn = participantDuelSide && liveState.turnSide === participantDuelSide;
+  const participantIsTurn = participantDuelSide && liveDisplayTurnSide === participantDuelSide;
   const participantWonDuel = Boolean(liveState.duelFinished && participantDuelSide && liveState.duelWinnerSide === participantDuelSide);
-  const participantTimerDanger = liveState.timer.running && liveState.timer.mode === 'response' && liveState.timer.seconds <= 5;
   const participantHasBuzzerClaim = Boolean(liveBuzzDisplaySide && !liveState.responseOutcome);
   const hostMustAdvanceDuel = Boolean(liveState.duelFinished);
   const participantQuestionExpired = Boolean(
@@ -846,19 +845,31 @@ function App() {
     liveState.timer.running &&
     !liveState.duelFinished
   );
-  const participantCanBuzz = Boolean(
-    participantCanActNow &&
-    participantIsTurn &&
-    !liveState.responderSide
-  );
   const participantCanSteal = Boolean(
     participantCanActNow &&
     !participantIsTurn &&
-    participantTimerDanger &&
-    (
-      liveState.stealAvailable ||
-      !liveState.responderSide
-    )
+    (liveState.timer.mode === 'steal' || (liveState.timer.mode === 'response' && liveState.timer.seconds <= 8)) &&
+    !liveState.responderSide
+  );
+  const hostActiveAnswerSide = liveState.responderSide ?? (liveState.questionVisible && !liveState.stealAvailable ? liveTurnSide : null);
+  const hostCanRevealAnswer = Boolean(
+    liveState.questionVisible &&
+    !liveState.revealAnswer &&
+    !liveState.duelFinished
+  );
+  const hostCanJudgeAnswer = Boolean(
+    liveState.questionVisible &&
+    !liveState.duelFinished &&
+    !liveState.revealAnswer &&
+    !liveState.responseOutcome &&
+    (!liveState.stealAvailable || Boolean(liveState.responderSide))
+  );
+  const hostCorrectActionType = liveState.responderSide && liveState.responderSide !== liveTurnSide ? 'MARK_STEAL_CORRECT' : 'MARK_RESPONSE_CORRECT';
+  const hostCanOverrideTurn = Boolean(
+    !liveState.duelFinished &&
+    !liveState.questionVisible &&
+    !liveState.timer.running &&
+    !liveState.responderSide
   );
 
   useEffect(() => {
@@ -916,10 +927,12 @@ function App() {
   const showRightEligiblePool = showDrawPool.length ? showDrawPool : showEligiblePlayers;
   const lockedWinner = lockedWinnerId ? players.find((player) => player.id === lockedWinnerId) ?? null : null;
   const lockedWinnerEligible = Boolean(lockedWinner && showEligiblePlayers.some((player) => player.id === lockedWinner.id));
-  const showLeftEligiblePool = lockedWinnerEligible ? [lockedWinner] : showRightEligiblePool;
+  const showLeftEligiblePool = lockedWinnerEligible
+    ? [lockedWinner, ...showRightEligiblePool.filter((player) => player.id !== lockedWinner.id)]
+    : showRightEligiblePool;
   const buildShowRollerTrack = (pool) => {
     if (!pool.length) return [];
-    return Array.from({ length: 5 }, () => pool).flat();
+    return Array.from({ length: SHOW_ROLLER_REPEAT_COUNT }, () => pool).flat();
   };
   const showLeftDrawTrack = useMemo(() => buildShowRollerTrack(showLeftEligiblePool), [showLeftEligiblePool]);
   const showRightDrawTrack = useMemo(() => buildShowRollerTrack(showRightEligiblePool), [showRightEligiblePool]);
@@ -1706,7 +1719,7 @@ function App() {
     const selectedIndex = pool.findIndex((player) => player.id === playerId);
     if (selectedIndex === -1) return null;
 
-    const targetSlot = pool.length * 2 + selectedIndex;
+    const targetSlot = pool.length * Math.floor(SHOW_ROLLER_REPEAT_COUNT / 2) + selectedIndex;
     const targetItem = trackElement.children[targetSlot];
     if (!targetItem) return null;
 
@@ -2131,6 +2144,15 @@ function App() {
         playerB: showDuelSelection.rightId,
       });
     }
+
+    if (liveState.responseOutcome || liveState.responderSide || liveState.buzzLockedSide) {
+      dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
+    }
+
+    if (!liveState.questionVisible && !liveState.currentQuestionId && nextPlayableQuestion) {
+      prepareLiveQuestion(nextPlayableQuestion, resolveNextQuestionTurnSide(liveState));
+    }
+
     patchShowState({ duelLaunched: true });
     navigateToScreen('hostPanel');
   };
@@ -2453,8 +2475,6 @@ function App() {
     const opponentLabel = participantOpponent
       ? `#${String(participantOpponent.playerNumber).padStart(2, '0')} - ${participantOpponent.name.toUpperCase()}`
       : 'OPONENTE PENDIENTE';
-    const primaryLabel = participantIsTurn ? 'RESPONDER' : 'ROBAR';
-    const primaryEnabled = participantIsTurn ? participantCanBuzz : participantCanSteal;
     const outcomeStatus = liveState.responseOutcome?.status ?? null;
     const outcomeSide = liveState.responseOutcome?.side ?? null;
     const participantOwnOutcome = Boolean(outcomeStatus && outcomeSide === participantDuelSide);
@@ -2511,7 +2531,7 @@ function App() {
               <p>{participantDuelSide === liveBuzzDisplaySide ? 'Tu jugada quedó clavada en pantalla hasta que el host decida.' : 'La respuesta ya fue tomada. Ahora no se mueve nada.'}</p>
             </div>
           </div>
-        ) : participantQuestionExpired || !liveState.questionVisible ? (
+        ) : participantQuestionExpired || !liveState.questionVisible || participantIsTurn ? (
           <>
             <div className="play-header participant-duel-header">
               <button className="back-button" type="button" onClick={logoutAccess}>Salir</button>
@@ -2523,8 +2543,8 @@ function App() {
 
             <div className="participant-duel-hero">
               <span className="participant-duel-kicker">{participantIsTurn ? '¡ES TU TURNO!' : '¡TE TOCÓ DUELO!'}</span>
-              <h2>{participantIsTurn ? 'PREPARATE PARA RESPONDER' : 'PREPARATE PARA EL DUELO'}</h2>
-              <p>{participantIsTurn ? 'Sos quien tiene la mano.' : 'Estás del otro lado del tablero.'}</p>
+              <h2>{participantIsTurn ? 'RESPONDÉ EN VOZ ALTA' : 'PREPARATE PARA EL DUELO'}</h2>
+              <p>{participantIsTurn ? 'La palabra ya está asignada. El host corrige tu respuesta desde su panel.' : 'Tu botón de robo se habilita desde el segundo 8 del reloj.'}</p>
             </div>
 
             <div className="participant-duel-opponent">
@@ -2535,21 +2555,21 @@ function App() {
             </div>
 
             <div className="participant-duel-offscreen-note">
-              ACERCATE AL ESCENARIO
+              {participantIsTurn ? 'RESPONDÉ AL HOST' : 'ACERCATE AL ESCENARIO'}
             </div>
           </>
         ) : (
           <div className="participant-duel-action-stage">
             <button
-              className={`participant-duel-action ${participantIsTurn ? 'is-response' : 'is-steal'} ${participantIsTurn ? (participantCanBuzz ? 'is-enabled' : 'is-disabled') : (participantCanSteal ? 'is-enabled' : 'is-disabled')}`}
+              className={`participant-duel-action is-steal ${participantCanSteal ? 'is-enabled' : 'is-disabled'}`}
               type="button"
               onClick={() => {
-                if (!primaryEnabled) return;
+                if (!participantCanSteal) return;
                 dispatchLiveAction({ type: 'PLAYER_BUZZ_IN', side: participantDuelSide });
               }}
-              disabled={!primaryEnabled}
+              disabled={!participantCanSteal}
             >
-              {primaryLabel}
+              ROBAR
             </button>
           </div>
         )}
@@ -2726,9 +2746,7 @@ function App() {
               <strong>Se viene el #{liveState.currentDuel}</strong>
             </div>
           </div>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={() => setShowFlowStep('standby')}>Ir al ranking</button>
-          </div>
+          <p className="brand-subtitle">Esperando que el host mande la pantalla al ranking.</p>
         </section>
       ) : null}
 
@@ -2738,7 +2756,6 @@ function App() {
             <section className="broadcast-card show-standing-stage player-theme-surface" style={finalWinner ? getPlayerThemeStyle(finalWinner) : undefined}>
               <div className="show-standing-head">
                 <h2>Tabla general</h2>
-                <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showEligiblePlayers.length < 2}>SORTEAR DUELO</button>
               </div>
               <p>Mientras se arma el próximo duelo, así queda la clasificación en vivo.</p>
               <div className="standby-summary">
@@ -2816,13 +2833,6 @@ function App() {
             <strong>{showSpinnerActive ? 'Buscando la dupla...' : `${showDuelNames.left} vs ${showDuelNames.right}`}</strong>
             <p>{showSpinnerActive ? 'Los dos tambores giran juntos hasta clavar una pareja distinta.' : 'La pareja quedó definida y espera la decisión del host para volver al ranking o pasar a la ruleta.'}</p>
           </div>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showSpinnerActive || showEligiblePlayers.length < 2}>
-              {showSpinnerActive ? 'Girando...' : 'Comenzar sorteo'}
-            </button>
-            <button className="secondary-action" type="button" onClick={returnShowToStandby} disabled={showSpinnerActive}>Volver al ranking</button>
-            <button className="secondary-action" type="button" onClick={advanceShowToThemeWheel} disabled={showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId}>Avanzar hacia la ruleta</button>
-          </div>
         </section>
       ) : null}
 
@@ -2853,7 +2863,7 @@ function App() {
                     </div>
                   );
                 })}
-                <button className="wheel-center" type="button" onClick={startBroadcastThemeSpin} disabled={showWheelSpinning}>GO</button>
+                <div className="wheel-center" aria-hidden="true">GO</div>
               </div>
             </div>
             <div className="wheel-panel">
@@ -2861,10 +2871,6 @@ function App() {
                 <span className="wheel-result-label">Resultado</span>
                 <strong>{showWheelSpinning ? 'Girando...' : showWheelResult ?? liveState.currentTheme ?? 'Aun no giraste'}</strong>
                 <p>{showWheelSpinning ? 'La ruleta sigue girando. Esperá el cierre del disco.' : 'Tema activo para el duelo.'}</p>
-              </div>
-              <div className="wheel-actions">
-                <button className="primary-action" type="button" onClick={startBroadcastThemeSpin} disabled={showWheelSpinning}>Girar ruleta</button>
-                <button className="secondary-action" type="button" onClick={advanceShowToQuestions} disabled={showWheelSpinning || !showWheelResult}>Ir a preguntas</button>
               </div>
             </div>
           </div>
@@ -2901,9 +2907,7 @@ function App() {
           </div>
           <h2>{showDuelNames.left} vs {showDuelNames.right}</h2>
           <p>Duelo #{liveState.currentDuel}. La sala ya tiene cruce confirmado.</p>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={continueFromShowVersus}>Pasar a salida</button>
-          </div>
+          <p className="brand-subtitle">Esperando la salida final del host.</p>
         </section>
       ) : null}
 
@@ -2924,10 +2928,7 @@ function App() {
               <strong>{liveConnection === 'connected' ? 'Sincronizado' : 'Conectando'}</strong>
             </div>
           </div>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={startShowDuel}>Lanzar ahora</button>
-            <button className="secondary-action" type="button" onClick={() => setShowFlowStep('standby')}>Volver al ranking</button>
-          </div>
+          <p className="brand-subtitle">El host lanza el duelo desde su panel.</p>
         </section>
       ) : null}
     </section>
@@ -3455,7 +3456,7 @@ function App() {
       <div className="show-stage-topline">
         <span className="show-badge">DUELO #{liveState.currentDuel}</span>
         <span className="machine-chip secondary">{liveState.currentTheme}</span>
-        <span className="machine-chip show-turn-chip player-theme-surface" style={getPlayerThemeSurfaceStyle(liveTurnPlayer ?? { playerNumber: liveTurnSide === 'playerA' ? 1 : 2, themeId: liveTurnTheme.id })}>{`Turno de: ${liveTurnName}`}</span>
+        <span className="machine-chip show-turn-chip player-theme-surface" style={getPlayerThemeSurfaceStyle(liveTurnPlayer ?? { playerNumber: liveDisplayTurnSide === 'playerA' ? 1 : 2, themeId: liveTurnTheme.id })}>{`Turno de: ${liveTurnName}`}</span>
       </div>
       {!liveState.questionVisible ? (
         <div className="show-question-card is-hidden">
@@ -3669,7 +3670,7 @@ function App() {
               <div className="hidden-question">
                 <span className="hidden-label">Respuesta privada</span>
                 <strong>{liveState.answer}</strong>
-                <p>{liveResponderName ? `${liveResponderName} tiene la palabra.` : 'Solo la ve el host hasta resolver la jugada.'}</p>
+                <p>{liveResponderName ? `${liveResponderName} tiene la palabra.` : liveStealEnabled ? `Robo abierto para ${liveStealName}.` : `${liveTurnName} tiene la palabra.`}</p>
               </div>
               <div className="broadcast-metrics host-broadcast-metrics">
                 <div><span>Fase</span><strong>{liveCurrentPhase.title}</strong></div>
@@ -3680,24 +3681,42 @@ function App() {
             </div>
             <div className="broadcast-card-head">
               <span className="machine-chip secondary">ACCIONES</span>
-              <span className={`machine-chip secondary ${liveStealEnabled ? 'is-live-highlight' : ''}`}>{liveStealEnabled ? `ROBO ${liveStealName}` : 'BUZZ'}</span>
+              <span className={`machine-chip secondary ${liveStealEnabled ? 'is-live-highlight' : ''}`}>{liveStealEnabled ? `ROBO ${liveStealName}` : `TURNO ${liveTurnName}`}</span>
             </div>
             <div className="broadcast-actions host-action-grid">
+              <div className="host-action-row">
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => dispatchLiveAction({ type: 'SET_TURN_SIDE', side: 'playerA' })}
+                  disabled={!hostCanOverrideTurn || liveTurnSide === 'playerA'}
+                >
+                  Turno {duelSeatPlayerA?.name ?? 'Jugador A'}
+                </button>
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => dispatchLiveAction({ type: 'SET_TURN_SIDE', side: 'playerB' })}
+                  disabled={!hostCanOverrideTurn || liveTurnSide === 'playerB'}
+                >
+                  Turno {duelSeatPlayerB?.name ?? 'Jugador B'}
+                </button>
+              </div>
               <div className="host-action-row">
                 <button className="primary-action" type="button" onClick={revealCurrentOrNextLiveQuestion} disabled={hostMustAdvanceDuel || liveState.questionVisible}>Revelar pregunta</button>
                 <button className="secondary-action" type="button" onClick={rerollPreparedQuestion} disabled={!hasPreparedLiveQuestion || currentThemePlayableQuestions.length === 0}>Re-roll pregunta</button>
               </div>
               <div className="host-action-row">
-                <button className="secondary-action" type="button" onClick={openRevealAnswerConfirm} disabled={!liveState.questionVisible || liveState.revealAnswer || liveState.duelFinished}>Revelar respuesta</button>
-                <button className="secondary-action action-success" type="button" onClick={() => dispatchLiveAction({ type: liveState.responderSide && liveState.responderSide !== liveTurnSide ? 'MARK_STEAL_CORRECT' : 'MARK_RESPONSE_CORRECT', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta correcta</button>
-                <button className="secondary-action action-danger" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: liveState.responderSide ?? liveTurnSide })} disabled={!liveState.responderSide}>Respuesta incorrecta</button>
+                <button className="secondary-action" type="button" onClick={openRevealAnswerConfirm} disabled={!hostCanRevealAnswer}>Revelar respuesta</button>
+                <button className="secondary-action action-success" type="button" onClick={() => dispatchLiveAction({ type: hostCorrectActionType, side: hostActiveAnswerSide ?? liveTurnSide })} disabled={!hostCanJudgeAnswer}>Respuesta correcta</button>
+                <button className="secondary-action action-danger" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: hostActiveAnswerSide ?? liveTurnSide })} disabled={!hostCanJudgeAnswer}>Respuesta incorrecta</button>
               </div>
               <button className="secondary-action host-next-question" type="button" onClick={prepareNextLiveQuestion} disabled={!nextPlayableQuestion || hostMustAdvanceDuel || liveState.currentQuestionId !== null}>Siguiente pregunta</button>
               <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
             </div>
             <div className="broadcast-note">
               <strong>Estado:</strong>
-              <span> {hostMustAdvanceDuel ? 'El duelo ya terminó. Tocá `Siguiente duelo` antes de cargar otra pregunta.' : liveState.message}</span>
+              <span> {hostMustAdvanceDuel ? 'El duelo ya terminó. Tocá `Siguiente duelo` antes de cargar otra pregunta.' : hostCanOverrideTurn ? `${liveState.message} Podés cambiar el turno antes de revelar la pregunta.` : liveState.message}</span>
             </div>
           </section>
           {renderBroadcastScoreTab()}

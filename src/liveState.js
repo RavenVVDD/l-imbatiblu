@@ -351,7 +351,7 @@ export function liveReducer(state, action) {
         nextTurnSide: null,
         timer: {
           label: 'Respuesta',
-          seconds: 12,
+          seconds: 15,
           running: true,
           mode: 'response',
         },
@@ -411,18 +411,22 @@ export function liveReducer(state, action) {
     case 'TICK_TIMER': {
       if (!state.timer.running) return state;
       if (state.timer.seconds <= 1) {
-        if (state.responseOutcome?.status === 'error' && state.stealAvailable && !state.responderSide) {
+        if (state.timer.mode === 'steal' && state.stealAvailable && !state.responderSide) {
           const nextTurnSide = oppositeSide(state.turnSide);
           return {
             ...state,
             stealAvailable: false,
             currentQuestionId: null,
+            questionVisible: true,
+            revealAnswer: true,
             responseOutcome: null,
             responderSide: null,
+            buzzLockedSide: null,
             turnSide: nextTurnSide,
+            nextTurnSide: nextTurnSide,
             timer: buildIdleTimer(),
-            turnLabel: buildTurnMessage(state, nextTurnSide, 'Turno de'),
-            message: `${state.teamNames[nextTurnSide]} pasa al siguiente duelo`,
+            turnLabel: 'Sin robo',
+            message: `${state.teamNames[nextTurnSide]} toma el siguiente turno`,
             lastAction: 'TICK_TIMER',
           };
         }
@@ -502,12 +506,18 @@ export function liveReducer(state, action) {
           stealAvailable: true,
           responderSide: null,
           buzzLockedSide: null,
-          responseOutcome: buildOutcome(state, 'error', wrongSide),
+          responseOutcome: null,
           revealAnswer: false,
           nextTurnSide: oppositeSide(state.turnSide),
-          phaseIndex: Math.max(state.phaseIndex, 2),
-          message: `${state.teamNames[wrongSide]} fallo`,
-          turnLabel: 'Respuesta incorrecta',
+          timer: {
+            label: 'Robo',
+            seconds: 3,
+            running: true,
+            mode: 'steal',
+          },
+          phaseIndex: LIVE_PHASES.findIndex((phase) => phase.id === 'steal_turn'),
+          message: `${state.teamNames[wrongSide]} fallo. Robo para ${state.teamNames[oppositeSide(state.turnSide)]}`,
+          turnLabel: 'Robo abierto',
           lastAction: 'MARK_RESPONSE_WRONG',
         };
       }
