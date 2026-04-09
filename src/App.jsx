@@ -328,6 +328,33 @@ function buildInitialPlayerSortDirection() {
   return persisted?.playerSortDirection === 'desc' ? 'desc' : 'asc';
 }
 
+function normalizeFinalBracketState(value) {
+  if (!value || typeof value !== 'object') {
+    return {
+      active: false,
+      phase: 'idle',
+      finalistIds: [],
+      semifinalWinnerIds: [],
+      championId: null,
+      runnerUpId: null,
+    };
+  }
+
+  return {
+    active: Boolean(value.active),
+    phase: ['idle', 'semifinal-1', 'semifinal-2', 'championship', 'completed'].includes(value.phase) ? value.phase : 'idle',
+    finalistIds: Array.isArray(value.finalistIds) ? value.finalistIds.filter((item) => typeof item === 'string') : [],
+    semifinalWinnerIds: Array.isArray(value.semifinalWinnerIds) ? value.semifinalWinnerIds.filter((item) => typeof item === 'string') : [],
+    championId: typeof value.championId === 'string' ? value.championId : null,
+    runnerUpId: typeof value.runnerUpId === 'string' ? value.runnerUpId : null,
+  };
+}
+
+function buildInitialFinalBracketState() {
+  const persisted = readPersistedAppState();
+  return normalizeFinalBracketState(persisted?.finalBracket);
+}
+
 function buildSharedAppState({
   players,
   nextPlayerNumber,
@@ -413,6 +440,7 @@ function App() {
   const [rotationQueue, setRotationQueue] = useState(() => initialPlayers.map((player) => player.id));
   const [duelSeats, setDuelSeats] = useState(() => ({ playerA: initialPlayers[0]?.id ?? null, playerB: initialPlayers[1]?.id ?? null }));
   const [lockedWinnerId, setLockedWinnerId] = useState(null);
+  const [finalBracket, setFinalBracket] = useState(buildInitialFinalBracketState);
 
   const [questions, setQuestions] = useState(buildInitialQuestions);
   const [questionsReady, setQuestionsReady] = useState(false);
@@ -609,6 +637,7 @@ function App() {
     setRotationQueue(normalizedQueue);
     syncDuelSeats(normalizedQueue);
     setLockedWinnerId(null);
+    setFinalBracket(normalizeFinalBracketState(null));
     dispatch({ type: 'RESET_FLOW' });
     dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: 1 });
   };
@@ -871,6 +900,11 @@ function App() {
     !liveState.timer.running &&
     !liveState.responderSide
   );
+  const hostCanOverrideTheme = Boolean(
+    !liveState.duelFinished &&
+    !liveState.questionVisible &&
+    !liveState.timer.running
+  );
 
   useEffect(() => {
     if (!players.length) return;
@@ -923,6 +957,35 @@ function App() {
   const finalWinner = finalRanking[0] ?? null;
   const finalCutoffPoints = finalContenders.length ? finalContenders[finalContenders.length - 1].points : 0;
   const finalTiePlayers = finalRanking.filter((player) => player.points === finalCutoffPoints);
+  const finalBracketPlayers = finalBracket.finalistIds
+    .map((playerId) => players.find((player) => player.id === playerId) ?? null)
+    .filter(Boolean);
+  const finalSemiOneIds = finalBracket.finalistIds.length >= 4 ? [finalBracket.finalistIds[0], finalBracket.finalistIds[3]] : [];
+  const finalSemiTwoIds = finalBracket.finalistIds.length >= 4 ? [finalBracket.finalistIds[1], finalBracket.finalistIds[2]] : [];
+  const finalChampionshipIds = finalBracket.semifinalWinnerIds.length >= 2 ? finalBracket.semifinalWinnerIds.slice(0, 2) : [];
+  const finalCurrentMatchIds = finalBracket.phase === 'semifinal-1'
+    ? finalSemiOneIds
+    : finalBracket.phase === 'semifinal-2'
+      ? finalSemiTwoIds
+      : finalBracket.phase === 'championship'
+        ? finalChampionshipIds
+        : [];
+  const finalCurrentMatchPlayers = finalCurrentMatchIds
+    .map((playerId) => players.find((player) => player.id === playerId) ?? null)
+    .filter(Boolean);
+  const finalChampionPlayer = finalBracket.championId ? players.find((player) => player.id === finalBracket.championId) ?? null : null;
+  const finalRunnerUpPlayer = finalBracket.runnerUpId ? players.find((player) => player.id === finalBracket.runnerUpId) ?? null : null;
+  const finalCanStart = finalContenders.length >= 4 && !finalBracket.active;
+  const finalIsInProgress = finalBracket.active && finalBracket.phase !== 'completed';
+  const finalPhaseLabel = finalBracket.phase === 'semifinal-1'
+    ? 'Semifinal 1'
+    : finalBracket.phase === 'semifinal-2'
+      ? 'Semifinal 2'
+      : finalBracket.phase === 'championship'
+        ? 'Gran final'
+        : finalBracket.phase === 'completed'
+          ? 'Final cerrada'
+          : 'Sin iniciar';
   const showEligiblePlayers = useMemo(() => players.filter((player) => player.active && !player.imbatible), [players]);
   const showRightEligiblePool = showDrawPool.length ? showDrawPool : showEligiblePlayers;
   const lockedWinner = lockedWinnerId ? players.find((player) => player.id === lockedWinnerId) ?? null : null;
@@ -1339,6 +1402,7 @@ function App() {
       playerSortDirection,
       rotationQueue,
       duelSeats,
+      finalBracket,
       hostPassword,
       wheelThemes,
       session: appRole ? {
@@ -1350,7 +1414,7 @@ function App() {
         lastShowScreen: lastShowScreenRef.current,
       } : null,
     });
-  }, [appRole, broadcastView, duelSeats, hostPassword, hostUnlocked, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, rotationQueue, screen, wheelThemes]);
+  }, [appRole, broadcastView, duelSeats, finalBracket, hostPassword, hostUnlocked, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, rotationQueue, screen, wheelThemes]);
 
   useEffect(() => {
     if (!hasHydratedSharedStateRef.current || !liveSocketRef.current) return;
@@ -2215,6 +2279,49 @@ function App() {
     }
   };
 
+  const launchConfiguredDuel = (playerAId, playerBId) => {
+    if (!playerAId || !playerBId) return;
+
+    setDuelSeats({
+      playerA: playerAId,
+      playerB: playerBId,
+    });
+    setLockedWinnerId(null);
+    patchShowState({ duelLaunched: true });
+    dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: liveState.currentDuel });
+    navigateToScreen('hostPanel');
+  };
+
+  const startFinalBracket = () => {
+    if (!finalCanStart) return;
+
+    const finalistIds = finalContenders.slice(0, 4).map((player) => player.id);
+    const semifinalOneIds = [finalistIds[0], finalistIds[3]].filter(Boolean);
+
+    setFinalBracket({
+      active: true,
+      phase: 'semifinal-1',
+      finalistIds,
+      semifinalWinnerIds: [],
+      championId: null,
+      runnerUpId: null,
+    });
+
+    if (semifinalOneIds.length === 2) {
+      launchConfiguredDuel(semifinalOneIds[0], semifinalOneIds[1]);
+    }
+  };
+
+  const resumeFinalBracket = () => {
+    if (!finalIsInProgress || finalCurrentMatchIds.length !== 2) return;
+    launchConfiguredDuel(finalCurrentMatchIds[0], finalCurrentMatchIds[1]);
+  };
+
+  const resetFinalBracket = () => {
+    setFinalBracket(normalizeFinalBracketState(null));
+    patchShowState({ duelLaunched: false });
+  };
+
   const applyDuelResultAndRotate = () => {
     if (!liveState.duelFinished || !liveState.duelWinnerSide) return;
 
@@ -2233,6 +2340,76 @@ function App() {
 
     if (!winnerPlayer || !loserPlayer) {
       dispatchLiveAction({ type: 'NEXT_DUEL' });
+      return;
+    }
+
+    if (finalBracket.active) {
+      const nextPlayers = players.map((player) => {
+        if (player.id === winnerId) {
+          return {
+            ...player,
+            points: player.points + 3,
+            roundsWon: player.roundsWon + 1,
+            winStreak: player.winStreak + 1,
+            active: true,
+          };
+        }
+
+        if (player.id === loserId) {
+          return {
+            ...player,
+            winStreak: 0,
+            active: false,
+          };
+        }
+
+        return player;
+      });
+
+      let nextFinalBracket = finalBracket;
+      let nextMatchIds = [];
+
+      if (finalBracket.phase === 'semifinal-1') {
+        nextFinalBracket = {
+          ...finalBracket,
+          phase: 'semifinal-2',
+          semifinalWinnerIds: [winnerId],
+        };
+        nextMatchIds = finalSemiTwoIds;
+      } else if (finalBracket.phase === 'semifinal-2') {
+        nextFinalBracket = {
+          ...finalBracket,
+          phase: 'championship',
+          semifinalWinnerIds: [...finalBracket.semifinalWinnerIds, winnerId],
+        };
+        nextMatchIds = [...finalBracket.semifinalWinnerIds, winnerId].slice(0, 2);
+      } else if (finalBracket.phase === 'championship') {
+        nextFinalBracket = {
+          ...finalBracket,
+          active: false,
+          phase: 'completed',
+          championId: winnerId,
+          runnerUpId: loserId,
+        };
+      }
+
+      setPlayers(nextPlayers);
+      setFinalBracket(nextFinalBracket);
+      setLockedWinnerId(null);
+
+      if (nextMatchIds.length === 2) {
+        setDuelSeats({
+          playerA: nextMatchIds[0],
+          playerB: nextMatchIds[1],
+        });
+        patchShowState({ duelLaunched: true });
+        dispatchLiveAction({ type: 'NEXT_DUEL' });
+        navigateToScreen('hostPanel');
+      } else {
+        patchShowState({ duelLaunched: false });
+        navigateToScreen('final');
+      }
+
       return;
     }
 
@@ -3654,6 +3831,7 @@ function App() {
               <span className="machine-chip secondary">{`Categoría: ${liveState.currentTheme}`}</span>
               <span className="machine-chip secondary">{`Turno de: ${liveTurnName}`}</span>
               <span className="machine-chip secondary">{liveState.questionVisible ? 'Pregunta al aire' : 'Pregunta oculta'}</span>
+              {finalIsInProgress ? <span className="machine-chip secondary">{finalPhaseLabel}</span> : null}
             </div>
             <h2>Control del duelo</h2>
             <div className="host-question-preview">
@@ -3684,6 +3862,21 @@ function App() {
               <span className={`machine-chip secondary ${liveStealEnabled ? 'is-live-highlight' : ''}`}>{liveStealEnabled ? `ROBO ${liveStealName}` : `TURNO ${liveTurnName}`}</span>
             </div>
             <div className="broadcast-actions host-action-grid">
+              <div className="host-action-row">
+                <select className="players-input" value={liveThemeDraft} onChange={(event) => setLiveThemeDraft(event.target.value)} disabled={!hostCanOverrideTheme}>
+                  {wheelThemes.map((theme) => (
+                    <option key={`host-theme-${theme.label}`} value={theme.label}>{theme.label}</option>
+                  ))}
+                </select>
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => dispatchLiveAction({ type: 'SET_THEME', theme: liveThemeDraft })}
+                  disabled={!hostCanOverrideTheme || !liveThemeDraft || liveThemeDraft === liveState.currentTheme}
+                >
+                  Forzar tema
+                </button>
+              </div>
               <div className="host-action-row">
                 <button
                   className="secondary-action"
@@ -3775,8 +3968,32 @@ function App() {
         </section>
         <aside className="players-side">
           <div className="players-note">
+            <h2>Estado de la final</h2>
+            <p>{finalPhaseLabel}</p>
+            <div className="broadcast-actions">
+              {!finalBracket.active && finalBracket.phase !== 'completed' ? (
+                <button className="primary-action" type="button" onClick={startFinalBracket} disabled={!finalCanStart}>Iniciar top 4</button>
+              ) : null}
+              {finalIsInProgress ? (
+                <button className="primary-action" type="button" onClick={resumeFinalBracket} disabled={finalCurrentMatchIds.length !== 2}>Abrir duelo actual</button>
+              ) : null}
+              {(finalBracket.active || finalBracket.phase === 'completed') ? (
+                <button className="secondary-action" type="button" onClick={resetFinalBracket}>Reiniciar final</button>
+              ) : null}
+            </div>
+            {!finalCanStart && !finalBracket.active && finalBracket.phase !== 'completed' ? (
+              <p>Necesitás al menos 4 jugadores en ranking para armar semifinales.</p>
+            ) : null}
+          </div>
+          <div className="players-note">
+            <h2>Cuadro</h2>
+            <p>Semifinal 1: {(finalSemiOneIds.map((playerId) => players.find((player) => player.id === playerId)?.name ?? 'Pendiente').join(' vs ')) || 'Pendiente'}</p>
+            <p>Semifinal 2: {(finalSemiTwoIds.map((playerId) => players.find((player) => player.id === playerId)?.name ?? 'Pendiente').join(' vs ')) || 'Pendiente'}</p>
+            <p>Final: {(finalChampionshipIds.map((playerId) => players.find((player) => player.id === playerId)?.name ?? 'Pendiente').join(' vs ')) || 'Pendiente'}</p>
+          </div>
+          <div className="players-note">
             <h2>Finalistas</h2>
-            <p>{finalContenders.map((player) => player.name).join(' - ') || 'Sin clasificar todavia'}</p>
+            <p>{(finalBracketPlayers.length ? finalBracketPlayers : finalContenders).map((player) => player.name).join(' - ') || 'Sin clasificar todavia'}</p>
           </div>
           <div className="players-note">
             <h2>Empate en corte</h2>
@@ -3784,7 +4001,9 @@ function App() {
           </div>
           <div className="players-note">
             <h2>Ganador actual</h2>
-            <p>{finalWinner ? `${finalWinner.name} lidera con ${finalWinner.points} puntos.` : 'Todavia no hay ranking.'}</p>
+            <p>{finalChampionPlayer ? `${finalChampionPlayer.name} ganó la final.` : finalWinner ? `${finalWinner.name} lidera con ${finalWinner.points} puntos.` : 'Todavia no hay ranking.'}</p>
+            {finalRunnerUpPlayer ? <p>Subcampeón: {finalRunnerUpPlayer.name}</p> : null}
+            {finalCurrentMatchPlayers.length === 2 && finalIsInProgress ? <p>Duelo actual: {finalCurrentMatchPlayers[0].name} vs {finalCurrentMatchPlayers[1].name}</p> : null}
           </div>
         </aside>
       </div>
