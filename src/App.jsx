@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import QRCode from 'qrcode';
 import buzzerSoundUrl from '../buzzer.mp3?url';
@@ -7,11 +7,11 @@ import wrongSoundUrl from '../wrong-price-is-right.mp3?url';
 import { LIVE_PHASES, buildInitialShowState, buildLiveStateFromSnapshot, initialLiveState, isShowInProgress, liveReducer, resolveNextQuestionTurnSide } from './liveState';
 
 const gamePhases = [
-  { id: 'lobby', title: 'Lobby', description: 'La partida esta lista para arrancar.' },
-  { id: 'theme_selection', title: 'Seleccion de tema', description: 'La ruleta define el tema unico del duelo.' },
+  { id: 'lobby', title: 'Lobby', description: 'La partida está lista para arrancar.' },
+  { id: 'theme_selection', title: 'Selección de tema', description: 'La ruleta define el tema único del duelo.' },
   { id: 'question_turn', title: 'Turno de pregunta', description: 'Un jugador responde con 5 segundos en reloj.' },
   { id: 'steal_turn', title: 'Turno de robo', description: 'El rival tiene 3 segundos para robar la pregunta.' },
-  { id: 'resolution', title: 'Resolucion', description: 'La app registra punto, robo o anulacion.' },
+  { id: 'resolution', title: 'Resolución', description: 'La app registra punto, robo o anulación.' },
   { id: 'duel_end', title: 'Fin de duelo', description: 'Se detecta ganador al llegar a 5 puntos.' },
   { id: 'player_swap', title: 'Cambio de jugador', description: 'El perdedor sale y entra el siguiente.' },
   { id: 'final', title: 'Final', description: 'Los mejores por puntaje pasan a la final.' },
@@ -33,7 +33,16 @@ const initialWheelThemes = [
   { label: 'Ortografía', emoji: '✍️' },
   { label: 'Juegos de mesa', emoji: '🎲' },
 ];
-const INITIAL_WHEEL_THEME_SIGNATURE = JSON.stringify(initialWheelThemes);
+function normalizeWheelThemesCollection(themes) {
+  if (!Array.isArray(themes) || !themes.length) {
+    return initialWheelThemes;
+  }
+
+  return themes.map((theme, index) => ({
+    label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label.trim() : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
+    emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji.trim() : initialWheelThemes[index]?.emoji ?? '🎯',
+  }));
+}
 
 const IMBATIBLE_BONUS_POINTS = 4;
 const DUEL_DRAW_SPIN_MS = 8000;
@@ -211,44 +220,111 @@ const initialGameMachine = { phaseIndex: 0, currentDuel: 1, activeState: 'idle' 
 
 function readPersistedAppState() {
   if (typeof window === 'undefined') return null;
+  
+  // Try localStorage first
   try {
     const raw = window.localStorage.getItem(APP_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ localStorage read failed:', error.message);
   }
+  
+  // Fallback to sessionStorage
+  try {
+    const raw = window.sessionStorage.getItem(APP_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        console.info('✅ Data loaded from sessionStorage fallback');
+        return parsed;
+      }
+    }
+  } catch (sessionError) {
+    console.warn('⚠️ sessionStorage read failed:', sessionError.message);
+  }
+  
+  // Last resort: in-memory storage
+  if (window.appStateBackup && window.appStateBackup[APP_STORAGE_KEY]) {
+    console.warn('⚠️ Data loaded from memory (may be incomplete)');
+    return window.appStateBackup[APP_STORAGE_KEY];
+  }
+  
+  return null;
 }
 
 function writePersistedAppState(nextState) {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(nextState));
-  } catch {
-    // Ignoramos fallas de almacenamiento local para no bloquear el vivo.
+  } catch (error) {
+    console.warn('⚠️ localStorage failed, attempting sessionStorage fallback:', error.message);
+    try {
+      // Fallback to sessionStorage
+      window.sessionStorage.setItem(APP_STORAGE_KEY, JSON.stringify(nextState));
+      console.info('✅ Data saved to sessionStorage as fallback');
+    } catch (sessionError) {
+      console.error('❌ Both localStorage and sessionStorage failed:', sessionError.message);
+      // Last resort: in-memory storage (will be lost on refresh)
+      if (!window.appStateBackup) window.appStateBackup = {};
+      window.appStateBackup[APP_STORAGE_KEY] = nextState;
+      console.warn('⚠️ Data saved to memory only (will be lost on refresh)');
+    }
   }
 }
 
 function readPersistedLiveState() {
   if (typeof window === 'undefined') return null;
+
   try {
     const raw = window.localStorage.getItem(LIVE_STATE_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ liveState localStorage read failed:', error.message);
   }
+
+  try {
+    const raw = window.sessionStorage.getItem(LIVE_STATE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ liveState sessionStorage read failed:', error.message);
+  }
+
+  if (window.liveStateBackup && window.liveStateBackup[LIVE_STATE_STORAGE_KEY]) {
+    return window.liveStateBackup[LIVE_STATE_STORAGE_KEY];
+  }
+
+  return null;
 }
 
 function writePersistedLiveState(nextState) {
   if (typeof window === 'undefined') return;
+
   try {
     window.localStorage.setItem(LIVE_STATE_STORAGE_KEY, JSON.stringify(nextState));
-  } catch {
-    // Si el snapshot local falla, el socket sigue siendo la verdad.
+  } catch (error) {
+    console.warn('⚠️ liveState localStorage write failed, attempting sessionStorage fallback:', error.message);
+    try {
+      window.sessionStorage.setItem(LIVE_STATE_STORAGE_KEY, JSON.stringify(nextState));
+    } catch (sessionError) {
+      console.error('❌ liveState sessionStorage write failed:', sessionError.message);
+      if (!window.liveStateBackup) window.liveStateBackup = {};
+      window.liveStateBackup[LIVE_STATE_STORAGE_KEY] = nextState;
+    }
   }
 }
 
@@ -309,22 +385,7 @@ function buildInitialQuestions() {
 
 function buildInitialWheelThemes() {
   const persisted = readPersistedAppState();
-  const persistedSignature = Array.isArray(persisted?.wheelThemes)
-    ? JSON.stringify(
-        persisted.wheelThemes.map((theme) => ({
-          label: typeof theme?.label === 'string' ? theme.label.trim() : '',
-          emoji: typeof theme?.emoji === 'string' ? theme.emoji.trim() : '',
-        })),
-      )
-    : null;
-
-  if (persistedSignature === INITIAL_WHEEL_THEME_SIGNATURE) {
-    return persisted.wheelThemes.map((theme, index) => ({
-      label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
-      emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji : initialWheelThemes[index]?.emoji ?? '🎯',
-    }));
-  }
-  return initialWheelThemes;
+  return normalizeWheelThemesCollection(persisted?.wheelThemes);
 }
 
 function buildInitialPlayerNumber() {
@@ -446,7 +507,9 @@ function App() {
   const showRightTrackRef = useRef(null);
   const showDrawSettleTimeoutRef = useRef(null);
   const showDrawNeedsSettleRef = useRef(false);
-  const showDrawAnimationPrimedRef = useRef(false);
+  const showSpinnerAnimationFrameRef = useRef(null);
+  const showAnimatedSpinnerOffsetsRef = useRef({ left: 0, right: 0 });
+  const [showAnimatedSpinnerOffsets, setShowAnimatedSpinnerOffsets] = useState({ left: 0, right: 0 });
 
   const [players, setPlayers] = useState(buildInitialPlayers);
   const [playerName, setPlayerName] = useState('');
@@ -525,7 +588,7 @@ function App() {
 
   const [liveState, setLiveState] = useState(() => buildLiveStateFromSnapshot(readPersistedLiveState()) ?? initialLiveState);
   const [liveConnection, setLiveConnection] = useState('offline');
-  const [liveQuestionDraft, setLiveQuestionDraft] = useState('¿En que ano se inauguro el Obelisco?');
+  const [liveQuestionDraft, setLiveQuestionDraft] = useState('¿En qué año se inauguró el Obelisco?');
   const [liveAnswerDraft, setLiveAnswerDraft] = useState('1936');
   const [liveThemeDraft, setLiveThemeDraft] = useState('Historia');
   const liveSocketRef = useRef(null);
@@ -574,6 +637,7 @@ function App() {
   const showWheelSpinning = Boolean(showState.wheelSpinning);
   const showWheelEndsAt = typeof showState.wheelEndsAt === 'number' ? showState.wheelEndsAt : null;
   const showWheelTargetTheme = typeof showState.wheelTargetTheme === 'string' && showState.wheelTargetTheme.trim() ? showState.wheelTargetTheme : null;
+  const effectiveShowSpinnerOffsets = showSpinnerActive ? showAnimatedSpinnerOffsets : showSpinnerOffsets;
   const patchShowState = (patch) => {
     dispatchLiveAction({ type: 'SHOW_PATCH', patch });
   };
@@ -922,7 +986,6 @@ function App() {
     !liveState.questionVisible &&
     !liveState.timer.running
   );
-
   useEffect(() => {
     if (!players.length) return;
     if (!players.some((player) => player.id === entryParticipantPlayerId)) {
@@ -1033,6 +1096,10 @@ function App() {
     liveState.currentQuestionId &&
     !liveState.questionVisible &&
     !liveState.duelFinished
+  );
+  const canStartShowDuel = Boolean(
+    !hostMustAdvanceDuel &&
+    (hasPreparedLiveQuestion || nextPlayableQuestion)
   );
   const navigateToScreen = (nextScreen) => {
     const normalizedScreen = normalizeScreenName(nextScreen);
@@ -1205,7 +1272,7 @@ function App() {
     }
 
     if (nextPassword !== confirmAttempt) {
-      setHostSettingsMessage('La nueva contraseña y la confirmacion no coinciden.');
+      setHostSettingsMessage('La nueva contraseña y la confirmación no coinciden.');
       return;
     }
 
@@ -1495,16 +1562,8 @@ function App() {
           if (sharedAppState.playerSortDirection === 'desc' || sharedAppState.playerSortDirection === 'asc') setPlayerSortDirection(sharedAppState.playerSortDirection);
           if (Array.isArray(sharedAppState.rotationQueue)) setRotationQueue(sharedAppState.rotationQueue);
           if (sharedAppState.duelSeats && typeof sharedAppState.duelSeats === 'object') setDuelSeats(sharedAppState.duelSeats);
-          const sharedWheelThemesSignature = Array.isArray(sharedAppState.wheelThemes)
-            ? JSON.stringify(
-                sharedAppState.wheelThemes.map((theme) => ({
-                  label: typeof theme?.label === 'string' ? theme.label.trim() : '',
-                  emoji: typeof theme?.emoji === 'string' ? theme.emoji.trim() : '',
-                })),
-              )
-            : null;
-          if (sharedWheelThemesSignature === INITIAL_WHEEL_THEME_SIGNATURE) {
-            setWheelThemes(sharedAppState.wheelThemes);
+          if (Array.isArray(sharedAppState.wheelThemes) && sharedAppState.wheelThemes.length) {
+            setWheelThemes(normalizeWheelThemesCollection(sharedAppState.wheelThemes));
           }
         }
       }
@@ -1527,6 +1586,7 @@ function App() {
     if (showFlowTimeoutRef.current) window.clearTimeout(showFlowTimeoutRef.current);
     if (showReadyIntervalRef.current) window.clearInterval(showReadyIntervalRef.current);
     if (showDrawSettleTimeoutRef.current) window.clearTimeout(showDrawSettleTimeoutRef.current);
+    if (showSpinnerAnimationFrameRef.current) window.cancelAnimationFrame(showSpinnerAnimationFrameRef.current);
     if (showWheelResolveTimeoutRef.current) window.clearTimeout(showWheelResolveTimeoutRef.current);
   }, []);
 
@@ -1590,12 +1650,21 @@ function App() {
     }
 
     window.requestAnimationFrame(() => {
-    const leftAdjustment = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showDuelSelection.leftId, showLeftEligiblePool);
-    const rightAdjustment = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showDuelSelection.rightId, showRightEligiblePool);
+      const baseOffsets = showAnimatedSpinnerOffsetsRef.current;
+      const leftAdjustment = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showDuelSelection.leftId, showLeftEligiblePool);
+      const rightAdjustment = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showDuelSelection.rightId, showRightEligiblePool);
+
+      console.log('[show-draw] settle snap', {
+        baseOffsets,
+        leftAdjustment,
+        rightAdjustment,
+        leftSelection: showDuelSelection.leftId,
+        rightSelection: showDuelSelection.rightId,
+      });
 
       setShowSpinnerOffsets((current) => ({
-        left: current.left + (leftAdjustment ?? 0),
-        right: current.right + (rightAdjustment ?? 0),
+        left: baseOffsets.left + (leftAdjustment ?? 0),
+        right: baseOffsets.right + (rightAdjustment ?? 0),
       }));
     });
 
@@ -1608,30 +1677,104 @@ function App() {
   }, [screen, showFlowStep, showSpinnerActive, showDuelSelection.leftId, showDuelSelection.rightId, showLeftEligiblePool, showRightEligiblePool]);
 
   useEffect(() => {
-    if (showFlowStep !== 'draw' || !showSpinnerActive || !showSpinnerSelection?.leftId || !showSpinnerSelection?.rightId) {
-      showDrawAnimationPrimedRef.current = false;
+    if (showSpinnerAnimationFrameRef.current) {
+      window.cancelAnimationFrame(showSpinnerAnimationFrameRef.current);
+      showSpinnerAnimationFrameRef.current = null;
+    }
+
+    if (showFlowStep !== 'draw' || !showSpinnerActive || !showSpinnerEndsAt || !showSpinnerSelection?.leftId || !showSpinnerSelection?.rightId) {
+      const offsetsChanged =
+        showAnimatedSpinnerOffsetsRef.current.left !== showSpinnerOffsets.left ||
+        showAnimatedSpinnerOffsetsRef.current.right !== showSpinnerOffsets.right;
+
+      if (offsetsChanged) {
+        showAnimatedSpinnerOffsetsRef.current = showSpinnerOffsets;
+        setShowAnimatedSpinnerOffsets(showSpinnerOffsets);
+      }
       return undefined;
     }
 
-    if (showDrawAnimationPrimedRef.current) return undefined;
-    showDrawAnimationPrimedRef.current = true;
+    const spinStartedAt = showSpinnerEndsAt - DUEL_DRAW_SPIN_MS;
+    const leftCycleHeight = getShowRollerCycleHeight(showLeftTrackRef.current, showLeftEligiblePool.length);
+    const rightCycleHeight = getShowRollerCycleHeight(showRightTrackRef.current, showRightEligiblePool.length);
 
-    const frame = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        const leftOffset = snapShowRollerToSelection(showLeftViewportRef.current, showLeftTrackRef.current, showSpinnerSelection.leftId, showLeftEligiblePool);
-        const rightOffset = snapShowRollerToSelection(showRightViewportRef.current, showRightTrackRef.current, showSpinnerSelection.rightId, showRightEligiblePool);
-
-        setShowSpinnerOffsets({
-          left: leftOffset ?? 0,
-          right: rightOffset ?? 0,
-        });
-      });
+    console.log('[show-draw] animation init', {
+      showFlowStep,
+      showSpinnerActive,
+      showSpinnerEndsAt,
+      spinStartedAt,
+      leftSelection: showSpinnerSelection.leftId,
+      rightSelection: showSpinnerSelection.rightId,
+      leftPoolSize: showLeftEligiblePool.length,
+      rightPoolSize: showRightEligiblePool.length,
+      leftTrackChildren: showLeftTrackRef.current?.children?.length ?? 0,
+      rightTrackChildren: showRightTrackRef.current?.children?.length ?? 0,
+      leftTrackHeight: showLeftTrackRef.current?.scrollHeight ?? 0,
+      rightTrackHeight: showRightTrackRef.current?.scrollHeight ?? 0,
+      leftCycleHeight,
+      rightCycleHeight,
+      persistedOffsets: showSpinnerOffsets,
     });
 
-    return () => {
-      window.cancelAnimationFrame(frame);
+    if (!leftCycleHeight || !rightCycleHeight) {
+      console.warn('[show-draw] animation aborted because cycle height is zero', {
+        leftCycleHeight,
+        rightCycleHeight,
+        leftTrackExists: Boolean(showLeftTrackRef.current),
+        rightTrackExists: Boolean(showRightTrackRef.current),
+      });
+      const offsetsChanged =
+        showAnimatedSpinnerOffsetsRef.current.left !== showSpinnerOffsets.left ||
+        showAnimatedSpinnerOffsetsRef.current.right !== showSpinnerOffsets.right;
+
+      if (offsetsChanged) {
+        showAnimatedSpinnerOffsetsRef.current = showSpinnerOffsets;
+        setShowAnimatedSpinnerOffsets(showSpinnerOffsets);
+      }
+      return undefined;
+    }
+
+    const leftSpeed = leftCycleHeight / 720;
+    const rightSpeed = rightCycleHeight / 640;
+
+    const animate = () => {
+      const elapsed = Math.max(0, Date.now() - spinStartedAt);
+      const now = Date.now();
+      const nextOffsets = {
+        left: -((elapsed * leftSpeed) % leftCycleHeight),
+        right: -(((elapsed * rightSpeed) + rightCycleHeight * 0.35) % rightCycleHeight),
+      };
+
+      if (elapsed < 80 || elapsed % 1000 < 18 || showSpinnerEndsAt - now < 80) {
+        console.log('[show-draw] animation tick', {
+          elapsed,
+          remaining: Math.max(0, showSpinnerEndsAt - now),
+          leftOffset: nextOffsets.left,
+          rightOffset: nextOffsets.right,
+          leftSpeed,
+          rightSpeed,
+        });
+      }
+
+      showAnimatedSpinnerOffsetsRef.current = nextOffsets;
+      setShowAnimatedSpinnerOffsets(nextOffsets);
+
+      if (now < showSpinnerEndsAt) {
+        showSpinnerAnimationFrameRef.current = window.requestAnimationFrame(animate);
+      } else {
+        showSpinnerAnimationFrameRef.current = null;
+      }
     };
-  }, [showFlowStep, showSpinnerActive, showSpinnerSelection?.leftId, showSpinnerSelection?.rightId, showDrawPool, showLeftEligiblePool, showRightEligiblePool]);
+
+    animate();
+
+    return () => {
+      if (showSpinnerAnimationFrameRef.current) {
+        window.cancelAnimationFrame(showSpinnerAnimationFrameRef.current);
+        showSpinnerAnimationFrameRef.current = null;
+      }
+    };
+  }, [showFlowStep, showSpinnerActive, showSpinnerEndsAt, showSpinnerSelection?.leftId, showSpinnerSelection?.rightId, showSpinnerOffsets, showLeftEligiblePool.length, showRightEligiblePool.length]);
 
   useEffect(() => {
     if (showDrawResolveTimeoutRef.current) {
@@ -1647,6 +1790,15 @@ function App() {
     const resolveDraw = () => {
       const leftPlayer = players.find((player) => player.id === showSpinnerSelection.leftId) ?? null;
       const rightPlayer = players.find((player) => player.id === showSpinnerSelection.rightId) ?? null;
+
+      console.log('[show-draw] resolve draw', {
+        remainingAtResolve: Math.max(0, showSpinnerEndsAt - Date.now()),
+        animatedOffsets: showAnimatedSpinnerOffsetsRef.current,
+        leftSelection: showSpinnerSelection.leftId,
+        rightSelection: showSpinnerSelection.rightId,
+        leftPlayer: leftPlayer ? { id: leftPlayer.id, name: leftPlayer.name } : null,
+        rightPlayer: rightPlayer ? { id: rightPlayer.id, name: rightPlayer.name } : null,
+      });
 
       showDrawNeedsSettleRef.current = true;
       setShowDuelSelection({
@@ -1720,7 +1872,7 @@ function App() {
         playerB: duelSeatPlayerB.name,
       });
     }
-  }, [duelSeatPlayerA?.id, duelSeatPlayerB?.id]);
+  }, [duelSeatPlayerA?.id, duelSeatPlayerA?.name, duelSeatPlayerB?.id, duelSeatPlayerB?.name]);
 
   useEffect(() => {
     const outcomeToken = liveState.responseOutcome?.token;
@@ -1817,6 +1969,11 @@ function App() {
     const viewportRect = viewportElement.getBoundingClientRect();
     const targetRect = targetItem.getBoundingClientRect();
     return (viewportRect.top + viewportRect.height / 2) - (targetRect.top + targetRect.height / 2);
+  };
+
+  const getShowRollerCycleHeight = (trackElement, poolSize) => {
+    if (!trackElement || !poolSize) return 0;
+    return trackElement.scrollHeight / SHOW_ROLLER_REPEAT_COUNT;
   };
 
   const rebuildRotationQueue = (nextPlayers, previousQueue = rotationQueue) => {
@@ -2053,6 +2210,18 @@ function App() {
   };
 
   const startShowDuelDraw = () => {
+    console.log('[show-draw] click sortear duelo', {
+      screen,
+      showFlowStep,
+      showSpinnerActive,
+      eligiblePlayers: showEligiblePlayers.map((player) => ({
+        id: player.id,
+        name: player.name,
+        playerNumber: player.playerNumber,
+      })),
+      lockedWinnerId,
+    });
+
     if (showSpinnerActive) return;
     if (showEligiblePlayers.length < 2) return;
 
@@ -2079,6 +2248,13 @@ function App() {
 
     const secondPick = partnerPool[Math.floor(Math.random() * partnerPool.length)];
     const spinnerEndsAt = Date.now() + DUEL_DRAW_SPIN_MS;
+
+    console.log('[show-draw] picks resolved', {
+      firstPick: firstPick ? { id: firstPick.id, name: firstPick.name, playerNumber: firstPick.playerNumber } : null,
+      secondPick: secondPick ? { id: secondPick.id, name: secondPick.name, playerNumber: secondPick.playerNumber } : null,
+      spinnerEndsAt,
+      drawPoolSize: drawPool.length,
+    });
 
     setShowFlowStep('draw');
     setShowSpinnerActive(true);
@@ -2165,6 +2341,30 @@ function App() {
     });
   };
 
+  useEffect(() => {
+    if (showDuelLaunched) return;
+    if (showFlowStep !== 'questions') return;
+    if (liveState.duelFinished || liveState.questionVisible || liveState.currentQuestionId) return;
+    if (!nextPlayableQuestion) return;
+    if (liveState.responseOutcome || liveState.revealAnswer || liveState.responderSide || liveState.buzzLockedSide) {
+      dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
+    }
+
+    prepareLiveQuestion(nextPlayableQuestion, resolveNextQuestionTurnSide(liveState));
+  }, [
+    showDuelLaunched,
+    showFlowStep,
+    liveState.duelFinished,
+    liveState.questionVisible,
+    liveState.currentQuestionId,
+    liveState.responseOutcome,
+    liveState.revealAnswer,
+    liveState.responderSide,
+    liveState.buzzLockedSide,
+    liveState.currentTheme,
+    nextPlayableQuestion,
+  ]);
+
   const prepareLiveQuestion = (question, turnSide = resolveNextQuestionTurnSide(liveState)) => {
     if (!question || liveState.duelFinished) return;
     setLiveQuestionDraft(question.prompt);
@@ -2212,7 +2412,7 @@ function App() {
       liveState.question &&
       liveState.question !== 'Esperando una pregunta del host' &&
       liveState.answer &&
-      liveState.answer !== 'Todavia no hay respuesta cargada'
+      liveState.answer !== 'Todavía no hay respuesta cargada'
     );
 
     if (liveState.currentQuestionId || hasPreparedHiddenQuestion) {
@@ -2229,6 +2429,8 @@ function App() {
   };
 
   const startShowDuel = () => {
+    if (!hasPreparedLiveQuestion && !nextPlayableQuestion) return;
+
     if (showDuelSelection.leftId && showDuelSelection.rightId) {
       setDuelSeats({
         playerA: showDuelSelection.leftId,
@@ -3006,7 +3208,7 @@ function App() {
                 <span className="show-roller-arrow" aria-hidden="true">➜</span>
                 <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showLeftViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
+                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${effectiveShowSpinnerOffsets.left}px)` }}>
                     {showLeftDrawTrack.map((player, index) => (
                       <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-left-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
@@ -3024,7 +3226,7 @@ function App() {
                 <span className="show-roller-arrow is-right" aria-hidden="true">➜</span>
                 <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showRightViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
+                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${effectiveShowSpinnerOffsets.right}px)` }}>
                     {showRightDrawTrack.map((player, index) => (
                       <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`show-right-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
@@ -3466,7 +3668,7 @@ function App() {
               <div className="show-roller-shell">
                 <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showLeftViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.left}px)` }}>
+                  <div className="show-roller-track" ref={showLeftTrackRef} style={{ transform: `translateY(${effectiveShowSpinnerOffsets.left}px)` }}>
                     {showLeftDrawTrack.map((player, index) => (
                       <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.leftId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`broadcast-show-left-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
@@ -3479,7 +3681,7 @@ function App() {
               <div className="show-roller-shell">
                 <div className={`show-roller-viewport ${showSpinnerActive ? 'is-spinning' : ''}`} ref={showRightViewportRef}>
                   <div className="show-roller-focus" aria-hidden="true" />
-                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${showSpinnerOffsets.right}px)` }}>
+                  <div className="show-roller-track" ref={showRightTrackRef} style={{ transform: `translateY(${effectiveShowSpinnerOffsets.right}px)` }}>
                     {showRightDrawTrack.map((player, index) => (
                       <div className={`show-roller-item ${showDrawRevealReady ? 'player-theme-surface' : ''} ${showSpinnerSelection?.rightId === player.id && !showSpinnerActive ? 'is-selected' : ''}`} key={`broadcast-show-right-${player.id}-${index}`} style={showDrawRevealReady ? getPlayerThemeStyle(player) : undefined}>
                         <span>#{String(player.playerNumber).padStart(2, '0')}</span>
@@ -3678,8 +3880,10 @@ function App() {
       )}
       {liveState.questionVisible || liveState.revealAnswer ? (
         <div className={`question-answer-box ${liveState.revealAnswer ? '' : 'is-concealed'}`}>
-          <span>Respuesta</span>
-          <strong>{liveState.answer}</strong>
+          <div className="question-answer-box-surface">
+            <span>Respuesta</span>
+            <strong>{liveState.answer}</strong>
+          </div>
         </div>
       ) : null}
       {showBuzzOverlay && liveBuzzDisplaySide && !liveState.responseOutcome ? (
@@ -3718,13 +3922,15 @@ function App() {
       ) : null}
       <div className="show-scoreboard">
         <div className="player-theme-surface show-score-card show-score-card-a" style={getPlayerThemeSurfaceStyle(duelSeatPlayerA ?? { playerNumber: 1, themeId: duelSeatThemeA.id })}>
-          <span>{duelSeatPlayerA?.name ?? 'Jugador 01'}</span>
-          <strong>{liveState.scoreboard.playerA}</strong>
+          <span>{duelSeatPlayerA?.name || liveState.teamNames?.playerA || 'Jugador 01'}</span>
+          <strong>{liveState.scoreboard.playerA ?? 0}</strong>
+          <small className="show-score-card-code">{`Código: ${duelSeatPlayerA?.accessCode ?? '----'}`}</small>
           <em>{`Robadas: ${duelSeatPlayerA?.stealsWon ?? 0}`}</em>
         </div>
         <div className="player-theme-surface show-score-card show-score-card-b" style={getPlayerThemeSurfaceStyle(duelSeatPlayerB ?? { playerNumber: 2, themeId: duelSeatThemeB.id })}>
-          <span>{duelSeatPlayerB?.name ?? 'Jugador 02'}</span>
-          <strong>{liveState.scoreboard.playerB}</strong>
+          <span>{duelSeatPlayerB?.name || liveState.teamNames?.playerB || 'Jugador 02'}</span>
+          <strong>{liveState.scoreboard.playerB ?? 0}</strong>
+          <small className="show-score-card-code">{`Código: ${duelSeatPlayerB?.accessCode ?? '----'}`}</small>
           <em>{`Robadas: ${duelSeatPlayerB?.stealsWon ?? 0}`}</em>
         </div>
         <div className={`show-timer-box ${liveTimerDanger ? 'is-danger' : ''}`}><span>Reloj</span><strong>{liveState.timer.running ? `${liveState.timer.seconds}s` : '—'}</strong></div>
@@ -3738,7 +3944,7 @@ function App() {
       {liveState.duelFinished ? (
         <div className="question-answer-box">
           <span>Ganador del duelo</span>
-          <strong>{liveDuelWinnerName ?? 'Pendiente'}</strong>
+          <strong>{liveDuelWinnerName || (liveState.duelWinnerSide ? liveState.teamNames?.[liveState.duelWinnerSide] || 'Ganador' : 'Pendiente')}</strong>
           <p>{liveState.message}</p>
         </div>
       ) : null}
@@ -3777,21 +3983,21 @@ function App() {
         ) : null}
         {showFlowStep === 'questions' ? (
           <>
-            <button className="primary-action" type="button" onClick={startShowDuel} disabled={hostMustAdvanceDuel}>Comenzar duelo</button>
+            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!canStartShowDuel}>Comenzar duelo</button>
             <button className="secondary-action" type="button" onClick={() => setShowFlowStep('theme')}>Volver a ruleta</button>
             <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
           </>
         ) : null}
         {showFlowStep === 'versus' ? (
           <>
-            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId || hostMustAdvanceDuel}>Comenzar duelo</button>
+            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId || !canStartShowDuel}>Comenzar duelo</button>
             <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
             <button className="secondary-action" type="button" onClick={continueFromShowVersus}>Ir a salida</button>
           </>
         ) : null}
         {showFlowStep === 'ready' ? (
           <>
-            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId || hostMustAdvanceDuel}>Comenzar duelo</button>
+            <button className="primary-action" type="button" onClick={startShowDuel} disabled={!showDuelSelection.leftId || !showDuelSelection.rightId || !canStartShowDuel}>Comenzar duelo</button>
             <button className="secondary-action" type="button" onClick={returnShowToStandby}>Volver al ranking</button>
           </>
         ) : null}
@@ -3831,48 +4037,6 @@ function App() {
   );
 
   const renderBroadcast = () => {
-    // Debug logs para entender el layout
-    console.log('🔍 DEBUG renderBroadcast:');
-    console.log('- showDuelLaunched:', showDuelLaunched);
-    console.log('- Grid classes:', showDuelLaunched ? 'broadcast-grid host-grid host-grid-single' : 'broadcast-grid host-grid');
-    
-    // Log después de montar el componente
-    setTimeout(() => {
-      const hostGrid = document.querySelector('.host-grid-single');
-      if (hostGrid) {
-        console.log('🔍 DEBUG host-grid-single encontrado:');
-        console.log('- display:', window.getComputedStyle(hostGrid).display);
-        console.log('- flex-direction:', window.getComputedStyle(hostGrid).flexDirection);
-        console.log('- gap:', window.getComputedStyle(hostGrid).gap);
-        console.log('- overflow-y:', window.getComputedStyle(hostGrid).overflowY);
-        console.log('- children count:', hostGrid.children.length);
-        
-        Array.from(hostGrid.children).forEach((child, index) => {
-          console.log(`- Child ${index} (${child.className}):`, {
-            position: window.getComputedStyle(child).position,
-            zIndex: window.getComputedStyle(child).zIndex,
-            offsetTop: child.offsetTop,
-            offsetHeight: child.offsetHeight,
-            flexShrink: window.getComputedStyle(child).flexShrink
-          });
-        });
-        
-        // Verificar si hay superposición
-        const children = Array.from(hostGrid.children);
-        if (children.length === 2) {
-          const child0 = children[0];
-          const child1 = children[1];
-          const child0Bottom = child0.offsetTop + child0.offsetHeight;
-          const child1Top = child1.offsetTop;
-          const overlap = child0Bottom > child1Top;
-          console.log('🔍 OVERLAP CHECK:');
-          console.log('- Child 0 bottom:', child0Bottom);
-          console.log('- Child 1 top:', child1Top);
-          console.log('- Overlap:', overlap ? 'YES ❌' : 'NO ✅');
-        }
-      }
-    }, 100);
-
     return (
     <section className="hero-frame broadcast-frame">
       <div className="play-header broadcast-header-minimal">
@@ -4010,7 +4174,7 @@ function App() {
           <strong>{finalWinner?.name ?? 'Pendiente'}</strong>
         </div>
       </div>
-      <div className="players-rule"><strong>Desempate:</strong><span>Primero puntos, luego rondas ganadas, despues robos correctos, estado Imbatible y por ultimo numero de jugador.</span></div>
+      <div className="players-rule"><strong>Desempate:</strong><span>Primero puntos, luego rondas ganadas, después robos correctos, estado Imbatible y, por último, número de jugador.</span></div>
       <div className="players-layout">
         <section className="players-panel">
           <div className="players-list">
@@ -4068,7 +4232,7 @@ function App() {
           </div>
           <div className="players-note">
             <h2>Finalistas</h2>
-            <p>{(finalBracketPlayers.length ? finalBracketPlayers : finalContenders).map((player) => player.name).join(' - ') || 'Sin clasificar todavia'}</p>
+            <p>{(finalBracketPlayers.length ? finalBracketPlayers : finalContenders).map((player) => player.name).join(' - ') || 'Sin clasificar todavía'}</p>
           </div>
           <div className="players-note">
             <h2>Empate en corte</h2>
@@ -4076,7 +4240,7 @@ function App() {
           </div>
           <div className="players-note">
             <h2>Ganador actual</h2>
-            <p>{finalChampionPlayer ? `${finalChampionPlayer.name} ganó la final.` : finalWinner ? `${finalWinner.name} lidera con ${finalWinner.points} puntos.` : 'Todavia no hay ranking.'}</p>
+            <p>{finalChampionPlayer ? `${finalChampionPlayer.name} ganó la final.` : finalWinner ? `${finalWinner.name} lidera con ${finalWinner.points} puntos.` : 'Todavía no hay ranking.'}</p>
             {finalRunnerUpPlayer ? <p>Subcampeón: {finalRunnerUpPlayer.name}</p> : null}
             {finalCurrentMatchPlayers.length === 2 && finalIsInProgress ? <p>Duelo actual: {finalCurrentMatchPlayers[0].name} vs {finalCurrentMatchPlayers[1].name}</p> : null}
           </div>
@@ -4132,7 +4296,7 @@ function App() {
       {screen === 'questions' && renderQuestions()}
       {screen === 'playersPanel' && renderAccessGate()}
       {screen === 'final' && renderFinal()}
-      {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACION</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuracion">×</button></div><div className="settings-list"><div className="setting-row"><span>Duracion de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuacion</span><strong>Clasico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
+      {settingsOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CONFIGURACIÓN</p><h2 id="settings-title">Preparar la trivia</h2></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuración">×</button></div><div className="settings-list"><div className="setting-row"><span>Duración de respuesta</span><strong>15 s</strong></div><div className="setting-row"><span>Sonidos del host</span><strong>Activados</strong></div><div className="setting-row"><span>Modo de puntuación</span><strong>Clásico</strong></div></div><div className="host-password-box"><strong>Acceso al host</strong><p>Definí una clave local para bloquear Hostear, Comenzar Show y esta configuración.</p>{hostPassword ? <input className="players-input" type="password" value={hostPasswordCurrent} onChange={(event) => setHostPasswordCurrent(event.target.value)} placeholder="Contraseña actual" /> : null}<input className="players-input" type="password" value={hostPasswordDraft} onChange={(event) => setHostPasswordDraft(event.target.value)} placeholder="Nueva contraseña del host" /><input className="players-input" type="password" value={hostPasswordConfirm} onChange={(event) => setHostPasswordConfirm(event.target.value)} placeholder="Confirmar contraseña" />{hostSettingsMessage ? <p className="bulk-import-feedback">{hostSettingsMessage}</p> : null}</div><button className="modal-cta" type="button" onClick={saveSettings}>Guardar ajustes</button></div></div>) : null}
       {wheelEditOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setWheelEditOpen(false)}>
           <div className="modal-card bulk-import-modal wheel-edit-modal" role="dialog" aria-modal="true" aria-labelledby="wheel-edit-title" onClick={(event) => event.stopPropagation()}>
@@ -4196,7 +4360,7 @@ function App() {
       {editQuestionOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setEditQuestionOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">EDITAR PREGUNTA</p><h2 id="edit-question-title">Modificar contenido</h2></div><button className="icon-button" type="button" onClick={() => setEditQuestionOpen(false)} aria-label="Cerrar editor">×</button></div><div className="bulk-import-body"><input className="players-input" type="text" value={editQuestionDraft.prompt} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="Pregunta" /><input className="players-input" type="text" value={editQuestionDraft.answer} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, answer: event.target.value }))} placeholder="Respuesta" /><div className="questions-filter-row"><select className="players-input" value={editQuestionDraft.theme} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, theme: event.target.value }))}>{questionCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select><select className="players-input" value={editQuestionDraft.difficulty} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, difficulty: event.target.value }))}><option value="Facil">Facil</option><option value="Media">Media</option><option value="Dificil">Dificil</option></select></div><div className="setting-row"><span>Usada</span><input type="checkbox" checked={editQuestionDraft.used} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, used: event.target.checked }))} /></div><div className="setting-row"><span>Aprobada</span><input type="checkbox" checked={editQuestionDraft.approved} onChange={(event) => setEditQuestionDraft((current) => ({ ...current, approved: event.target.checked }))} /></div><div className="bulk-import-actions"><button className="primary-action" type="button" onClick={saveEditQuestion}>Guardar cambios</button><button className="secondary-action" type="button" onClick={() => setEditQuestionOpen(false)}>Cancelar</button></div></div></div></div>) : null}
       {bulkImportOpen ? (<div className="modal-backdrop" role="presentation" onClick={() => setBulkImportOpen(false)}><div className="modal-card bulk-import-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-import-title" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="modal-kicker">CARGA MASIVA</p><h2 id="bulk-import-title">Pegar preguntas en bloque</h2></div><button className="icon-button" type="button" onClick={() => setBulkImportOpen(false)} aria-label="Cerrar carga masiva">×</button></div><div className="bulk-import-body"><div className="bulk-import-spec"><strong>Formato esperado</strong><code>TEMA: Historia
  DIFICULTAD: Facil
- PREGUNTA: ¿En que ano se inauguro el Obelisco?
+ PREGUNTA: ¿En qué año se inauguró el Obelisco?
  RESPUESTA: 1936
  APROBADA: si
  USADA: no
@@ -4204,7 +4368,7 @@ function App() {
  ---
  </code></div><textarea className="bulk-import-textarea" value={bulkImportText} onChange={(event) => setBulkImportText(event.target.value)} placeholder={`TEMA: Historia
  DIFICULTAD: Facil
- PREGUNTA: ¿En que ano se inauguro el Obelisco?
+ PREGUNTA: ¿En qué año se inauguró el Obelisco?
  RESPUESTA: 1936
  APROBADA: si
  USADA: no

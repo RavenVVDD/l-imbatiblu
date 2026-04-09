@@ -1,9 +1,9 @@
 export const LIVE_PHASES = [
-  { id: 'lobby', title: 'Lobby', description: 'La partida esta lista para arrancar.' },
+  { id: 'lobby', title: 'Lobby', description: 'La partida está lista para arrancar.' },
   {
     id: 'theme_selection',
-    title: 'Seleccion de tema',
-    description: 'La ruleta define el tema unico del duelo.',
+    title: 'Selección de tema',
+    description: 'La ruleta define el tema único del duelo.',
   },
   {
     id: 'question_turn',
@@ -13,12 +13,12 @@ export const LIVE_PHASES = [
   {
     id: 'steal_turn',
     title: 'Turno de robo',
-    description: 'Se abre una ultima ventana para robar la pregunta.',
+    description: 'Se abre una última ventana para robar la pregunta.',
   },
   {
     id: 'resolution',
-    title: 'Resolucion',
-    description: 'La app registra acierto, error o anulacion.',
+    title: 'Resolución',
+    description: 'La app registra acierto, error o anulación.',
   },
   {
     id: 'duel_end',
@@ -39,6 +39,10 @@ export const LIVE_PHASES = [
 
 function oppositeSide(side) {
   return side === 'playerA' ? 'playerB' : 'playerA';
+}
+
+function isPlayerSide(side) {
+  return side === 'playerA' || side === 'playerB';
 }
 
 function buildTurnMessage(state, side, label) {
@@ -81,7 +85,7 @@ function buildOutcome(state, status, side) {
     status,
     side,
     token: Date.now(),
-    label: status === 'success' ? `${state.teamNames[side]} respondio bien` : `${state.teamNames[side]} fallo`,
+    label: status === 'success' ? `${state.teamNames[side]} respondió bien` : `${state.teamNames[side]} falló`,
   };
 }
 
@@ -99,7 +103,7 @@ function resolveScore(state, scorerSide, message) {
     phaseIndex: duelWon ? duelEndIndex : Math.max(state.phaseIndex, 4),
     duelWinnerSide: duelWon ? scorerSide : state.duelWinnerSide,
     duelFinished: duelWon || state.duelFinished,
-    message: duelWon ? `${state.teamNames[scorerSide]} gano el duelo` : message,
+    message: duelWon ? `${state.teamNames[scorerSide]} ganó el duelo` : message,
     lastAction: 'SCORE_UPDATE',
   };
 }
@@ -110,7 +114,7 @@ export const initialLiveState = {
   currentTheme: 'Historia',
   currentQuestionId: null,
   question: 'Esperando una pregunta del host',
-  answer: 'Todavia no hay respuesta cargada',
+  answer: 'Todavía no hay respuesta cargada',
   questionVisible: false,
   revealAnswer: false,
   turnSide: 'playerA',
@@ -132,7 +136,7 @@ export const initialLiveState = {
     playerA: 'Jugador A',
     playerB: 'Jugador B',
   },
-  message: 'Esperando senal del host',
+  message: 'Esperando señal del host',
   connectedClients: 0,
   lastAction: 'idle',
   show: buildInitialShowState(),
@@ -266,6 +270,7 @@ export function liveReducer(state, action) {
         connectedClients: state.connectedClients,
         teamNames: state.teamNames,
         currentDuel: action.currentDuel ?? state.currentDuel,
+        duelFinished: false, // Explicitly ensure duelFinished is reset
       };
     case 'NEXT_DUEL':
       return {
@@ -274,7 +279,7 @@ export function liveReducer(state, action) {
         currentTheme: 'Historia',
         currentQuestionId: null,
         question: 'Esperando una pregunta del host',
-        answer: 'Todavia no hay respuesta cargada',
+        answer: 'Todavía no hay respuesta cargada',
         questionVisible: false,
         revealAnswer: false,
         turnSide: 'playerA',
@@ -320,7 +325,6 @@ export function liveReducer(state, action) {
         responderSide: null,
         buzzLockedSide: null,
         responseOutcome: null,
-        nextTurnSide: null,
         turnSide: action.turnSide ?? state.turnSide,
         timer: buildIdleTimer(),
         turnLabel: 'Pregunta oculta',
@@ -336,7 +340,7 @@ export function liveReducer(state, action) {
           kind: action.kind ?? 'response',
           token: Date.now(),
         },
-        message: `${state.teamNames[action.side ?? state.turnSide]} activo ${action.kind === 'steal' ? 'robo' : 'respuesta'}`,
+        message: `${state.teamNames[action.side ?? state.turnSide]} activó ${action.kind === 'steal' ? 'robo' : 'respuesta'}`,
         lastAction: 'PARTICIPANT_PRIMARY_ACTION',
       };
     case 'REVEAL_QUESTION':
@@ -361,7 +365,8 @@ export function liveReducer(state, action) {
         lastAction: 'REVEAL_QUESTION',
       };
     case 'PLAYER_BUZZ_IN': {
-      if (!state.questionVisible || state.responseOutcome || state.responderSide) return state;
+      if (!isPlayerSide(action.side)) return state;
+      if (!state.questionVisible || state.revealAnswer || state.responseOutcome || state.responderSide) return state;
 
       return {
         ...state,
@@ -369,7 +374,7 @@ export function liveReducer(state, action) {
         buzzLockedSide: action.side,
         buzzToken: Date.now(),
         turnLabel: `${state.teamNames[action.side]} responde`,
-        message: `${state.teamNames[action.side]} tomo la palabra`,
+        message: `${state.teamNames[action.side]} tomó la palabra`,
         lastAction: 'PLAYER_BUZZ_IN',
         timer: {
           ...state.timer,
@@ -410,8 +415,23 @@ export function liveReducer(state, action) {
       };
     case 'TICK_TIMER': {
       if (!state.timer.running) return state;
-      if (state.timer.seconds <= 1) {
-        if (state.timer.mode === 'steal' && state.stealAvailable && !state.responderSide) {
+
+      if (state.timer.seconds > 1) {
+        return {
+          ...state,
+          timer: {
+            ...state.timer,
+            seconds: state.timer.seconds - 1,
+          },
+          lastAction: 'TICK_TIMER',
+        };
+      }
+
+      const hasResponder = Boolean(state.responderSide);
+      const hasOutcome = Boolean(state.responseOutcome);
+
+      if (state.timer.mode === 'steal') {
+        if (state.stealAvailable && !hasResponder) {
           const nextTurnSide = oppositeSide(state.turnSide);
           return {
             ...state,
@@ -423,41 +443,61 @@ export function liveReducer(state, action) {
             responderSide: null,
             buzzLockedSide: null,
             turnSide: nextTurnSide,
-            nextTurnSide: nextTurnSide,
+            nextTurnSide,
             timer: buildIdleTimer(),
             turnLabel: 'Sin robo',
             message: `${state.teamNames[nextTurnSide]} toma el siguiente turno`,
-            lastAction: 'TICK_TIMER',
+            lastAction: 'TICK_TIMER_STEAL_TIMEOUT',
           };
         }
-        if (!state.responderSide && !state.responseOutcome) {
-          const nextTurnSide = oppositeSide(state.turnSide);
-          return {
-            ...state,
-            stealAvailable: false,
-            currentQuestionId: null,
-            responderSide: null,
-            buzzLockedSide: null,
-            responseOutcome: null,
-            turnSide: nextTurnSide,
-            timer: buildIdleTimer(),
-            turnLabel: buildTurnMessage(state, nextTurnSide, 'Turno de'),
-            message: `${state.teamNames[nextTurnSide]} toma el siguiente turno`,
-            lastAction: 'TICK_TIMER',
-          };
-        }
-        if (state.responderSide && !state.responseOutcome) {
-          return {
-            ...state,
-            timer: {
-              ...state.timer,
-              seconds: 0,
-              running: false,
-            },
-            message: `${state.timer.label} finalizado`,
-            lastAction: 'TICK_TIMER',
-          };
-        }
+
+        console.warn('Timer expired in steal mode with an inconsistent state, forcing resolution.', {
+          stealAvailable: state.stealAvailable,
+          responderSide: state.responderSide,
+          responseOutcome: state.responseOutcome,
+          turnSide: state.turnSide,
+        });
+
+        const nextTurnSide = oppositeSide(state.turnSide);
+        return {
+          ...state,
+          stealAvailable: false,
+          currentQuestionId: null,
+          questionVisible: true,
+          revealAnswer: true,
+          responseOutcome: state.responseOutcome ?? null,
+          responderSide: null,
+          buzzLockedSide: null,
+          turnSide: nextTurnSide,
+          nextTurnSide,
+          timer: buildIdleTimer(),
+          turnLabel: 'Sin robo',
+          message: `${state.teamNames[nextTurnSide]} toma el siguiente turno`,
+          lastAction: 'TICK_TIMER_STEAL_TIMEOUT',
+        };
+      }
+
+      if (!hasResponder && !hasOutcome) {
+        const nextTurnSide = oppositeSide(state.turnSide);
+        return {
+          ...state,
+          stealAvailable: false,
+          currentQuestionId: null,
+          questionVisible: false,
+          revealAnswer: false,
+          responderSide: null,
+          buzzLockedSide: null,
+          responseOutcome: null,
+          turnSide: nextTurnSide,
+          nextTurnSide,
+          timer: buildIdleTimer(),
+          turnLabel: buildTurnMessage(state, nextTurnSide, 'Turno de'),
+          message: `${state.teamNames[nextTurnSide]} toma el siguiente turno`,
+          lastAction: 'TICK_TIMER_QUESTION_TIMEOUT',
+        };
+      }
+
+      if (hasResponder && !hasOutcome) {
         return {
           ...state,
           timer: {
@@ -469,20 +509,24 @@ export function liveReducer(state, action) {
           lastAction: 'TICK_TIMER',
         };
       }
+
       return {
         ...state,
         timer: {
           ...state.timer,
-          seconds: state.timer.seconds - 1,
+          seconds: 0,
+          running: false,
         },
+        message: `${state.timer.label} finalizado`,
         lastAction: 'TICK_TIMER',
       };
     }
+
     case 'MARK_RESPONSE_CORRECT': {
       const scorerSide = action.side ?? state.responderSide ?? state.turnSide;
       const isSteal = scorerSide !== state.turnSide;
       return {
-        ...resolveScore(state, scorerSide, isSteal ? `${state.teamNames[scorerSide]} robo bien` : `${state.teamNames[scorerSide]} respondio bien`),
+        ...resolveScore(state, scorerSide, isSteal ? `${state.teamNames[scorerSide]} robó bien` : `${state.teamNames[scorerSide]} respondió bien`),
         questionVisible: true,
         revealAnswer: true,
         stealAvailable: false,
@@ -500,7 +544,8 @@ export function liveReducer(state, action) {
     case 'MARK_RESPONSE_WRONG': {
       const wrongSide = action.side ?? state.responderSide ?? state.turnSide;
       const isSteal = wrongSide !== state.turnSide;
-      if (!isSteal) {
+
+      if (!isSteal && !state.stealAvailable && state.timer.mode !== 'steal') {
         return {
           ...state,
           stealAvailable: true,
@@ -516,11 +561,16 @@ export function liveReducer(state, action) {
             mode: 'steal',
           },
           phaseIndex: LIVE_PHASES.findIndex((phase) => phase.id === 'steal_turn'),
-          message: `${state.teamNames[wrongSide]} fallo. Robo para ${state.teamNames[oppositeSide(state.turnSide)]}`,
+          message: `${state.teamNames[wrongSide]} falló. Robo para ${state.teamNames[oppositeSide(state.turnSide)]}`,
           turnLabel: 'Robo abierto',
           lastAction: 'MARK_RESPONSE_WRONG',
         };
       }
+
+      const message = isSteal
+        ? `${state.teamNames[wrongSide]} falló el robo`
+        : `${state.teamNames[wrongSide]} falló. Sin más robos disponibles.`;
+
       return {
         ...state,
         stealAvailable: false,
@@ -533,16 +583,19 @@ export function liveReducer(state, action) {
         nextTurnSide: oppositeSide(wrongSide),
         timer: buildIdleTimer(),
         phaseIndex: Math.max(state.phaseIndex, isSteal ? 3 : 2),
-        message: isSteal ? `${state.teamNames[wrongSide]} fallo el robo` : `${state.teamNames[wrongSide]} fallo`,
+        message,
         turnLabel: isSteal ? 'Robo incorrecto' : 'Respuesta incorrecta',
         lastAction: 'MARK_RESPONSE_WRONG',
       };
     }
+
     case 'MARK_NO_RESPONSE':
       return {
         ...state,
         stealAvailable: false,
         currentQuestionId: null,
+        questionVisible: false,
+        revealAnswer: false,
         responderSide: null,
         buzzLockedSide: null,
         responseOutcome: null,
@@ -557,7 +610,7 @@ export function liveReducer(state, action) {
     case 'MARK_STEAL_CORRECT': {
       const scorerSide = action.side ?? state.responderSide ?? oppositeSide(state.turnSide);
       return {
-        ...resolveScore(state, scorerSide, `${state.teamNames[scorerSide]} robo bien`),
+        ...resolveScore(state, scorerSide, `${state.teamNames[scorerSide]} robó bien`),
         questionVisible: true,
         revealAnswer: true,
         stealAvailable: false,
@@ -585,7 +638,7 @@ export function liveReducer(state, action) {
         nextTurnSide: null,
         timer: buildIdleTimer(),
         message: 'Pregunta anulada',
-        turnLabel: 'Sin pregunta valida',
+        turnLabel: 'Sin pregunta válida',
         lastAction: 'ANULATE_QUESTION',
       };
     case 'ADD_SCORE': {
@@ -598,7 +651,7 @@ export function liveReducer(state, action) {
           ...state.scoreboard,
           [side]: nextScore,
         },
-        message: `${state.teamNames[side]} ${amount > 0 ? 'sumo' : 'resto'} 1 punto`,
+        message: `${state.teamNames[side]} ${amount > 0 ? 'sumó' : 'restó'} 1 punto`,
         lastAction: 'ADD_SCORE',
       };
     }
@@ -622,6 +675,7 @@ export function liveReducer(state, action) {
         ...state,
         questionVisible: action.value ? true : state.questionVisible,
         revealAnswer: Boolean(action.value),
+        timer: action.value ? buildIdleTimer() : state.timer,
         lastAction: 'SET_REVEAL_ANSWER',
       };
     case 'CLEAR_RESPONSE_OUTCOME':
