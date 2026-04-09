@@ -18,14 +18,20 @@ const gamePhases = [
 ];
 
 const initialWheelThemes = [
-  { label: 'Historia', emoji: '🏛️' },
-  { label: 'Deportes', emoji: '⚽' },
-  { label: 'Cine', emoji: '🎬' },
-  { label: 'Musica', emoji: '🎵' },
-  { label: 'Geografia', emoji: '🗺️' },
-  { label: 'Cultura pop', emoji: '✨' },
-  { label: 'Gaming', emoji: '🎮' },
   { label: 'Argentina', emoji: '🇦🇷' },
+  { label: 'Cultura General', emoji: '📚' },
+  { label: 'Geografía', emoji: '🌍' },
+  { label: 'Historia', emoji: '🏛️' },
+  { label: 'Comida', emoji: '🍔' },
+  { label: 'Series y películas', emoji: '🎬' },
+  { label: 'Música', emoji: '🎵' },
+  { label: 'Tecnología', emoji: '💻' },
+  { label: 'Redes', emoji: '📱' },
+  { label: 'Gaming', emoji: '🎮' },
+  { label: 'Deportes', emoji: '⚽' },
+  { label: 'Idiomas', emoji: '🌐' },
+  { label: 'Ortografía', emoji: '✍️' },
+  { label: 'Juegos de mesa', emoji: '🎲' },
 ];
 
 const IMBATIBLE_BONUS_POINTS = 4;
@@ -300,7 +306,7 @@ function buildInitialQuestions() {
 
 function buildInitialWheelThemes() {
   const persisted = readPersistedAppState();
-  if (Array.isArray(persisted?.wheelThemes) && persisted.wheelThemes.length) {
+  if (Array.isArray(persisted?.wheelThemes) && persisted.wheelThemes.length === initialWheelThemes.length) {
     return persisted.wheelThemes.map((theme, index) => ({
       label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
       emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji : initialWheelThemes[index]?.emoji ?? '🎯',
