@@ -1625,13 +1625,14 @@ html {
 }
 
 .wheel-frame {
-  max-width: 980px;
+  width: min(1240px, calc(100vw - 24px));
+  max-width: 1240px;
 }
 
 .wheel-layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.18fr) 304px;
+  gap: 22px;
   align-items: center;
 }
 
@@ -1639,7 +1640,7 @@ html {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 520px;
+  min-height: 720px;
   border: 4px solid var(--ink);
   border-radius: 30px;
   background:
@@ -1709,7 +1710,7 @@ html {
 
 .wheel-disk {
   position: relative;
-  width: min(420px, 84vw);
+  width: min(600px, 92vw);
   aspect-ratio: 1;
   border: 6px solid var(--ink);
   border-radius: 50%;
@@ -1763,10 +1764,10 @@ html {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 62px;
-  height: 62px;
-  margin-left: -31px;
-  margin-top: -31px;
+  width: 58px;
+  height: 58px;
+  margin-left: -29px;
+  margin-top: -29px;
   display: grid;
   place-items: center;
   border: 3px solid var(--ink);
@@ -1824,7 +1825,7 @@ html {
 
 .wheel-panel {
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 
 .wheel-result-card {
@@ -2910,16 +2911,16 @@ html {
 }
 
 .broadcast-wheel-layout {
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1.08fr) 260px;
   align-items: stretch;
 }
 
 .broadcast-wheel-layout .wheel-stage {
-  min-height: 420px;
+  min-height: 620px;
 }
 
 .broadcast-wheel-layout .wheel-disk {
-  width: min(360px, 74vw);
+  width: min(520px, 84vw);
 }
 
 .broadcast-show-list {

@@ -33,6 +33,7 @@ const initialWheelThemes = [
   { label: 'Ortografía', emoji: '✍️' },
   { label: 'Juegos de mesa', emoji: '🎲' },
 ];
+const INITIAL_WHEEL_THEME_SIGNATURE = JSON.stringify(initialWheelThemes);
 
 const IMBATIBLE_BONUS_POINTS = 4;
 const DUEL_DRAW_SPIN_MS = 8000;
@@ -40,6 +41,7 @@ const DUEL_DRAW_ITEM_HEIGHT = 44;
 const DUEL_DRAW_VIEWPORT_HEIGHT = 244;
 const SHOW_READY_COUNTDOWN_SECONDS = 10;
 const WHEEL_SPIN_DURATION_MS = 5200;
+const WHEEL_LABEL_RADIUS = 148;
 const APP_STORAGE_KEY = 'l-imbatiblu:persistent-state:v1';
 const LIVE_STATE_STORAGE_KEY = 'l-imbatiblu:live-state:v1';
 const SCREEN_ALIASES = {
@@ -306,7 +308,16 @@ function buildInitialQuestions() {
 
 function buildInitialWheelThemes() {
   const persisted = readPersistedAppState();
-  if (Array.isArray(persisted?.wheelThemes) && persisted.wheelThemes.length === initialWheelThemes.length) {
+  const persistedSignature = Array.isArray(persisted?.wheelThemes)
+    ? JSON.stringify(
+        persisted.wheelThemes.map((theme) => ({
+          label: typeof theme?.label === 'string' ? theme.label.trim() : '',
+          emoji: typeof theme?.emoji === 'string' ? theme.emoji.trim() : '',
+        })),
+      )
+    : null;
+
+  if (persistedSignature === INITIAL_WHEEL_THEME_SIGNATURE) {
     return persisted.wheelThemes.map((theme, index) => ({
       label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
       emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji : initialWheelThemes[index]?.emoji ?? '🎯',
@@ -1407,7 +1418,17 @@ function App() {
           if (sharedAppState.playerSortDirection === 'desc' || sharedAppState.playerSortDirection === 'asc') setPlayerSortDirection(sharedAppState.playerSortDirection);
           if (Array.isArray(sharedAppState.rotationQueue)) setRotationQueue(sharedAppState.rotationQueue);
           if (sharedAppState.duelSeats && typeof sharedAppState.duelSeats === 'object') setDuelSeats(sharedAppState.duelSeats);
-          if (Array.isArray(sharedAppState.wheelThemes)) setWheelThemes(sharedAppState.wheelThemes);
+          const sharedWheelThemesSignature = Array.isArray(sharedAppState.wheelThemes)
+            ? JSON.stringify(
+                sharedAppState.wheelThemes.map((theme) => ({
+                  label: typeof theme?.label === 'string' ? theme.label.trim() : '',
+                  emoji: typeof theme?.emoji === 'string' ? theme.emoji.trim() : '',
+                })),
+              )
+            : null;
+          if (sharedWheelThemesSignature === INITIAL_WHEEL_THEME_SIGNATURE) {
+            setWheelThemes(sharedAppState.wheelThemes);
+          }
         }
       }
 
@@ -2852,7 +2873,7 @@ function App() {
                     <div
                       key={`show-theme-${theme.label}-${index}`}
                       className="wheel-label"
-                      style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }}
+                style={{ transform: `rotate(${angle}deg) translateY(-${WHEEL_LABEL_RADIUS}px) rotate(${-angle}deg)` }}
                       aria-label={theme.label}
                     >
                       <span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span>
@@ -2963,7 +2984,7 @@ function App() {
                 <div
                   key={`${theme.label}-${index}`}
                   className="wheel-label"
-                  style={{ transform: `rotate(${angle}deg) translateY(-106px) rotate(${-angle}deg)` }}
+                  style={{ transform: `rotate(${angle}deg) translateY(-${WHEEL_LABEL_RADIUS}px) rotate(${-angle}deg)` }}
                   aria-label={theme.label}
                 >
                   <span className="wheel-emoji" aria-hidden="true">{theme.emoji}</span>
