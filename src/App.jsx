@@ -2194,6 +2194,10 @@ function App() {
     setShowRevealAnswerConfirmOpen(false);
   };
 
+  const adjustDuelScore = (side, kind, amount) => {
+    dispatchLiveAction({ type: 'ADD_SCORE', side, kind, amount });
+  };
+
   const dispatchLiveAction = (action) => {
     if (action.type === 'MARK_RESPONSE_CORRECT') {
       const scoringSide = action.side ?? liveState.responderSide ?? liveTurnSide;
@@ -3649,7 +3653,50 @@ function App() {
     </section>
   );
 
-  const renderBroadcast = () => (
+  const renderBroadcast = () => {
+    // Debug logs para entender el layout
+    console.log('🔍 DEBUG renderBroadcast:');
+    console.log('- showDuelLaunched:', showDuelLaunched);
+    console.log('- Grid classes:', showDuelLaunched ? 'broadcast-grid host-grid host-grid-single' : 'broadcast-grid host-grid');
+    
+    // Log después de montar el componente
+    setTimeout(() => {
+      const hostGrid = document.querySelector('.host-grid-single');
+      if (hostGrid) {
+        console.log('🔍 DEBUG host-grid-single encontrado:');
+        console.log('- display:', window.getComputedStyle(hostGrid).display);
+        console.log('- flex-direction:', window.getComputedStyle(hostGrid).flexDirection);
+        console.log('- gap:', window.getComputedStyle(hostGrid).gap);
+        console.log('- overflow-y:', window.getComputedStyle(hostGrid).overflowY);
+        console.log('- children count:', hostGrid.children.length);
+        
+        Array.from(hostGrid.children).forEach((child, index) => {
+          console.log(`- Child ${index} (${child.className}):`, {
+            position: window.getComputedStyle(child).position,
+            zIndex: window.getComputedStyle(child).zIndex,
+            offsetTop: child.offsetTop,
+            offsetHeight: child.offsetHeight,
+            flexShrink: window.getComputedStyle(child).flexShrink
+          });
+        });
+        
+        // Verificar si hay superposición
+        const children = Array.from(hostGrid.children);
+        if (children.length === 2) {
+          const child0 = children[0];
+          const child1 = children[1];
+          const child0Bottom = child0.offsetTop + child0.offsetHeight;
+          const child1Top = child1.offsetTop;
+          const overlap = child0Bottom > child1Top;
+          console.log('🔍 OVERLAP CHECK:');
+          console.log('- Child 0 bottom:', child0Bottom);
+          console.log('- Child 1 top:', child1Top);
+          console.log('- Overlap:', overlap ? 'YES ❌' : 'NO ✅');
+        }
+      }
+    }, 100);
+
+    return (
     <section className="hero-frame broadcast-frame">
       <div className="play-header broadcast-header-minimal">
         <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
@@ -3750,7 +3797,8 @@ function App() {
         </div>
       )}
     </section>
-  );
+    );
+  };
 
   const renderFinal = () => (
     <section className="hero-frame players-frame">

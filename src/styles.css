@@ -3504,7 +3504,26 @@ html {
 }
 
 .host-grid.host-grid-single {
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.host-grid.host-grid-single > .broadcast-card {
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.host-grid.host-grid-single > .broadcast-card.conductor-card-wide {
+  position: relative;
+  z-index: 1;
+}
+
+.host-grid.host-grid-single > .broadcast-card.score-control-card {
+  position: relative;
+  z-index: 2;
 }
 
 .conductor-card-wide {
