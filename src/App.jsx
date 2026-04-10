@@ -96,7 +96,7 @@ function chooseOptimalGroupCount(totalPlayers, targetSize = 4) {
   return bestGroupCount;
 }
 
-function buildOptimizedGroupTable(players) {
+function buildOptimizedGroupTable(players, shuffleNonce = 0) {
   const totalPlayers = Array.isArray(players) ? players.length : 0;
   if (!totalPlayers) {
     return {
@@ -108,7 +108,23 @@ function buildOptimizedGroupTable(players) {
   }
 
   const groupCount = chooseOptimalGroupCount(totalPlayers, 4);
-  const shuffledPlayers = shuffleCollection(players);
+  
+  // Create seeded shuffle based on nonce
+  let shuffledPlayers = [...players];
+  if (shuffleNonce > 0) {
+    // Use nonce as seed for deterministic shuffling
+    const seedRandom = (seed) => {
+      let x = Math.sin(seed) * 10000;
+      return x - Math.floor(x);
+    };
+    
+    for (let index = shuffledPlayers.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(seedRandom(shuffleNonce + index) * (index + 1));
+      [shuffledPlayers[index], shuffledPlayers[randomIndex]] = [shuffledPlayers[randomIndex], shuffledPlayers[index]];
+    }
+  } else {
+    shuffledPlayers = shuffleCollection(players);
+  }
   const baseSize = Math.floor(totalPlayers / groupCount);
   const remainder = totalPlayers % groupCount;
   let cursor = 0;
@@ -587,6 +603,11 @@ function buildInitialFinalBracketState() {
   return normalizeFinalBracketState(persisted?.finalBracket);
 }
 
+function buildInitialGroupShuffleNonce() {
+  const persisted = readPersistedAppState();
+  return typeof persisted?.groupShuffleNonce === 'number' && persisted.groupShuffleNonce >= 0 ? persisted.groupShuffleNonce : 0;
+}
+
 function buildInitialLockedWinnerId() {
   const persisted = readPersistedAppState();
   return typeof persisted?.lockedWinnerId === 'string' ? persisted.lockedWinnerId : null;
@@ -712,7 +733,7 @@ function App() {
   const [editQuestionId, setEditQuestionId] = useState(null);
   const [wheelEditOpen, setWheelEditOpen] = useState(false);
   const [wheelEditDraft, setWheelEditDraft] = useState([]);
-  const [groupShuffleNonce, setGroupShuffleNonce] = useState(0);
+  const [groupShuffleNonce, setGroupShuffleNonce] = useState(buildInitialGroupShuffleNonce);
   const [editQuestionDraft, setEditQuestionDraft] = useState({
     prompt: '',
     answer: '',
@@ -749,6 +770,7 @@ function App() {
   const [shareQrLoading, setShareQrLoading] = useState(false);
   const [shareQrError, setShareQrError] = useState('');
   const [shareCopyFeedback, setShareCopyFeedback] = useState('');
+  const [hostMenuOpen, setHostMenuOpen] = useState(false);
   const lastBuzzTokenRef = useRef(null);
   const lastOutcomeTokenRef = useRef(null);
   const incorrectCountdownIntervalRef = useRef(null);
@@ -1257,7 +1279,7 @@ function App() {
     });
   }, [players]);
 
-  const showGroupTable = useMemo(() => buildOptimizedGroupTable(players), [players, groupShuffleNonce]);
+  const showGroupTable = useMemo(() => buildOptimizedGroupTable(players, groupShuffleNonce), [players, groupShuffleNonce]);
   const showGroupDuelQueue = useMemo(() => buildGroupDuelQueue(showGroupTable.groups), [showGroupTable.groups]);
   const showGroupDuelCursor = Number.isFinite(showState.groupDuelCursor) ? showState.groupDuelCursor : 0;
   const showCurrentGroupDuel = showGroupDuelQueue[showGroupDuelCursor] ?? null;
@@ -1735,6 +1757,7 @@ function App() {
       lockedWinnerId,
       lastDuelWinnerId,
       finalBracket,
+      groupShuffleNonce,
       hostPassword,
       session: appRole ? {
         role: appRole,
@@ -1745,7 +1768,7 @@ function App() {
         lastShowScreen: lastShowScreenRef.current,
       } : null,
     });
-  }, [appRole, broadcastView, duelSeats, finalBracket, hostPassword, hostUnlocked, lastDuelWinnerId, lockedWinnerId, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, rotationQueue, screen]);
+  }, [appRole, broadcastView, duelSeats, finalBracket, groupShuffleNonce, hostPassword, hostUnlocked, lastDuelWinnerId, lockedWinnerId, nextPlayerNumber, participantIdentity, players, playerSortDirection, playerSortKey, rotationQueue, screen]);
 
   useEffect(() => {
     if (!hasHydratedSharedStateRef.current || !liveSocketRef.current) return;
@@ -3638,11 +3661,7 @@ function App() {
               <div className="show-group-empty show-group-empty-full">Todavía no hay jugadores cargados</div>
             )}
           </div>
-          <div className="broadcast-actions">
-            <button className="primary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Comenzar duelo</button>
-            <button className="secondary-action" type="button" onClick={reshuffleGroupTable}>Re-shufflear grupos</button>
-          </div>
-        </section>
+                  </section>
       ) : null}
 
       {!showDuelLaunched && showFlowStep === 'standby' ? (
@@ -4672,15 +4691,35 @@ function App() {
     return (
     <section className="hero-frame broadcast-frame">
       <div className="play-header broadcast-header-minimal">
-        <button className="back-button" type="button" onClick={goBackScreen}>← Volver</button>
+        <button className="back-button" type="button" onClick={goBackScreen}>Volver</button>
         <div className="play-header-copy">
           <p className="sponsor-line">HOST</p>
           <h1 className="play-title">Panel de control</h1>
         </div>
         <div className="cta-panel">
-          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playOptions')}>Setup</button>
-          <button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>Show</button>
-          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>Participantes</button>
+          <div className="host-menu-container">
+            <button 
+              className="icon-button host-menu-button" 
+              type="button" 
+              onClick={() => setHostMenuOpen(!hostMenuOpen)}
+              aria-label="Menú"
+            >
+              {hostMenuOpen ? '×' : ' '}
+            </button>
+            {hostMenuOpen && (
+              <div className="host-menu-dropdown">
+                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('playOptions'); setHostMenuOpen(false); }}>
+                  Setup
+                </button>
+                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('showPanel'); setHostMenuOpen(false); }}>
+                  Show
+                </button>
+                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('playersPanel'); setHostMenuOpen(false); }}>
+                  Participantes
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="broadcast-connection">
@@ -4735,7 +4774,7 @@ function App() {
               </div>
               <div className="broadcast-metrics host-broadcast-metrics">
                 <div><span>Fase</span><strong>{liveCurrentPhase.title}</strong></div>
-                <div className={`show-timer-box ${liveTimerDanger ? 'is-danger' : ''}`}><span>{liveTimerLabel}</span><strong>{liveState.timer.running ? String(liveState.timer.seconds).padStart(2, '0') : '—'}</strong></div>
+                <div className={`show-timer-box ${liveTimerDanger ? 'is-danger' : ''}`}><span>{liveTimerLabel}</span><strong>{liveState.timer.running ? String(liveState.timer.seconds).padStart(2, '0') : ' - '}</strong></div>
                 <div><span>Buzz</span><strong>{liveResponderName ?? 'Esperando'}</strong></div>
                 <div><span>Puntaje</span><strong>{`${liveState.scoreboard.playerA}-${liveState.scoreboard.playerB}`}</strong></div>
               </div>
@@ -4795,7 +4834,9 @@ function App() {
               <span> {hostMustAdvanceDuel ? 'El duelo ya terminó. Tocá `Siguiente duelo` antes de cargar otra pregunta.' : hostCanOverrideTurn ? `${liveState.message} Podés cambiar el turno antes de revelar la pregunta.` : liveState.message}</span>
             </div>
           </section>
-          {showGroupDuelMode ? renderBroadcastScoreTabGroup() : renderBroadcastScoreTab()}
+          <div className="broadcast-score-container">
+            {showGroupDuelMode ? renderBroadcastScoreTabGroup() : renderBroadcastScoreTab()}
+          </div>
         </div>
       )}
     </section>
