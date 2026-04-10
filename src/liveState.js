@@ -81,6 +81,10 @@ export function buildInitialShowState() {
     wheelSpinning: false,
     wheelEndsAt: null,
     wheelTargetTheme: null,
+    groupDuelMode: false,
+    groupDuelCursor: 0,
+    groupDuelIntroEndsAt: null,
+    groupDuel: null,
   };
 }
 
@@ -230,6 +234,10 @@ export function buildLiveStateFromSnapshot(snapshot) {
         ...(snapshot.show?.duelSelection ?? {}),
       },
       drawPool: Array.isArray(snapshot.show?.drawPool) ? snapshot.show.drawPool : buildInitialShowState().drawPool,
+      groupDuelMode: Boolean(snapshot.show?.groupDuelMode),
+      groupDuelCursor: Number.isFinite(snapshot.show?.groupDuelCursor) ? snapshot.show.groupDuelCursor : buildInitialShowState().groupDuelCursor,
+      groupDuelIntroEndsAt: typeof snapshot.show?.groupDuelIntroEndsAt === 'number' ? snapshot.show.groupDuelIntroEndsAt : null,
+      groupDuel: snapshot.show?.groupDuel ?? null,
     },
   };
 

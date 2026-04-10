@@ -44,6 +44,136 @@ function normalizeWheelThemesCollection(themes) {
   }));
 }
 
+function shuffleCollection(collection) {
+  const shuffled = [...collection];
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+  }
+
+  return shuffled;
+}
+
+function getGroupLabel(index) {
+  let value = index;
+  let label = '';
+
+  do {
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26) - 1;
+  } while (value >= 0);
+
+  return `Grupo ${label}`;
+}
+
+function chooseOptimalGroupCount(totalPlayers, targetSize = 4) {
+  if (totalPlayers <= 0) return 0;
+
+  const idealGroupCount = Math.max(1, Math.round(totalPlayers / targetSize));
+  let bestGroupCount = 1;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let groupCount = 1; groupCount <= totalPlayers; groupCount += 1) {
+    const baseSize = Math.floor(totalPlayers / groupCount);
+    const remainder = totalPlayers % groupCount;
+    const averageSize = totalPlayers / groupCount;
+    const sizes = Array.from({ length: groupCount }, (_, index) => baseSize + (index < remainder ? 1 : 0));
+    const variance = sizes.reduce((sum, size) => sum + (size - averageSize) ** 2, 0) / groupCount;
+    const score = Math.abs(averageSize - targetSize) * 10 + variance + groupCount * 0.05;
+
+    const isBetterScore = score < bestScore - 1e-9;
+    const isTieButCloserToIdeal =
+      Math.abs(score - bestScore) <= 1e-9 &&
+      Math.abs(groupCount - idealGroupCount) < Math.abs(bestGroupCount - idealGroupCount);
+
+    if (isBetterScore || isTieButCloserToIdeal) {
+      bestGroupCount = groupCount;
+      bestScore = score;
+    }
+  }
+
+  return bestGroupCount;
+}
+
+function buildOptimizedGroupTable(players) {
+  const totalPlayers = Array.isArray(players) ? players.length : 0;
+  if (!totalPlayers) {
+    return {
+      totalPlayers: 0,
+      groupCount: 0,
+      averageSize: 0,
+      groups: [],
+    };
+  }
+
+  const groupCount = chooseOptimalGroupCount(totalPlayers, 4);
+  const shuffledPlayers = shuffleCollection(players);
+  const baseSize = Math.floor(totalPlayers / groupCount);
+  const remainder = totalPlayers % groupCount;
+  let cursor = 0;
+
+  const groups = Array.from({ length: groupCount }, (_, index) => {
+    const size = baseSize + (index < remainder ? 1 : 0);
+    const groupPlayers = shuffledPlayers.slice(cursor, cursor + size);
+    cursor += size;
+
+    return {
+      label: getGroupLabel(index),
+      players: groupPlayers,
+    };
+  });
+
+  return {
+    totalPlayers,
+    groupCount,
+    averageSize: totalPlayers / groupCount,
+    groups,
+  };
+}
+
+function buildGroupDuelQueue(groups) {
+  if (!Array.isArray(groups) || !groups.length) return [];
+
+  const groupedPairs = groups.map((group, groupIndex) => {
+    const players = Array.isArray(group?.players) ? group.players : [];
+    const pairs = [];
+
+    for (let index = 0; index < players.length; index += 2) {
+      const playerA = players[index] ?? null;
+      const playerB = players[index + 1] ?? null;
+      if (!playerA || !playerB) continue;
+      pairs.push({
+        groupIndex,
+        groupLabel: group.label ?? getGroupLabel(groupIndex),
+        pairIndex: Math.floor(index / 2),
+        playerA,
+        playerB,
+      });
+    }
+
+    return pairs;
+  });
+
+  const maxPairs = groupedPairs.reduce((max, pairs) => Math.max(max, pairs.length), 0);
+  const queue = [];
+
+  for (let pairIndex = 0; pairIndex < maxPairs; pairIndex += 1) {
+    groupedPairs.forEach((pairs) => {
+      const match = pairs[pairIndex];
+      if (match) queue.push(match);
+    });
+  }
+
+  return queue.map((match, index) => ({
+    ...match,
+    matchNumber: index + 1,
+    key: `group-${match.groupIndex + 1}-pair-${match.pairIndex + 1}`,
+    title: `Duelo de grupos #${index + 1}`,
+    subtitle: `${match.groupLabel}: #${String(match.playerA.playerNumber).padStart(2, '0')} vs #${String(match.playerB.playerNumber).padStart(2, '0')}`,
+  }));
+}
+
 const IMBATIBLE_BONUS_POINTS = 4;
 const DUEL_DRAW_SPIN_MS = 8000;
 const DUEL_DRAW_ITEM_HEIGHT = 44;
@@ -582,6 +712,7 @@ function App() {
   const [editQuestionId, setEditQuestionId] = useState(null);
   const [wheelEditOpen, setWheelEditOpen] = useState(false);
   const [wheelEditDraft, setWheelEditDraft] = useState([]);
+  const [groupShuffleNonce, setGroupShuffleNonce] = useState(0);
   const [editQuestionDraft, setEditQuestionDraft] = useState({
     prompt: '',
     answer: '',
@@ -1125,6 +1256,15 @@ function App() {
       return a.playerNumber - b.playerNumber;
     });
   }, [players]);
+
+  const showGroupTable = useMemo(() => buildOptimizedGroupTable(players), [players, groupShuffleNonce]);
+  const showGroupDuelQueue = useMemo(() => buildGroupDuelQueue(showGroupTable.groups), [showGroupTable.groups]);
+  const showGroupDuelCursor = Number.isFinite(showState.groupDuelCursor) ? showState.groupDuelCursor : 0;
+  const showCurrentGroupDuel = showGroupDuelQueue[showGroupDuelCursor] ?? null;
+  const showNextGroupDuel = showGroupDuelQueue[showGroupDuelCursor + 1] ?? null;
+  const showGroupDuelMode = Boolean(showState.groupDuelMode);
+  const showGroupDuelIntroEndsAt = typeof showState.groupDuelIntroEndsAt === 'number' ? showState.groupDuelIntroEndsAt : null;
+  const showCurrentGroupDuelNumber = showCurrentGroupDuel?.matchNumber ?? showGroupDuelCursor + 1;
 
   const finalContenders = finalRanking.slice(0, Math.min(4, finalRanking.length));
   const finalWinner = finalRanking[0] ?? null;
@@ -1715,6 +1855,19 @@ function App() {
 
     if (screen !== 'showPanel') return undefined;
 
+    if (showFlowStep === 'groupIntro') {
+      const introEndsAt = showGroupDuelIntroEndsAt ?? (Date.now() + 5000);
+      if (!showGroupDuelIntroEndsAt) {
+        patchShowState({ groupDuelIntroEndsAt: introEndsAt });
+      }
+
+      showFlowTimeoutRef.current = window.setTimeout(() => {
+        if (showCurrentGroupDuel) {
+          launchConfiguredGroupDuel(showCurrentGroupDuel, showGroupDuelCursor);
+        }
+      }, Math.max(0, introEndsAt - Date.now()));
+    }
+
     if (showFlowStep === 'ready') {
       setShowReadyCountdown(SHOW_READY_COUNTDOWN_SECONDS);
       showReadyIntervalRef.current = window.setInterval(() => {
@@ -1740,8 +1893,12 @@ function App() {
         window.clearInterval(showReadyIntervalRef.current);
         showReadyIntervalRef.current = null;
       }
+      if (showFlowTimeoutRef.current && showFlowStep === 'groupIntro') {
+        window.clearTimeout(showFlowTimeoutRef.current);
+        showFlowTimeoutRef.current = null;
+      }
     };
-  }, [screen, showFlowStep]);
+  }, [screen, showFlowStep, showGroupDuelIntroEndsAt, showCurrentGroupDuel, showGroupDuelCursor]);
 
   useEffect(() => {
     if (screen !== 'showPanel' || showFlowStep !== 'intro') return undefined;
@@ -2123,6 +2280,10 @@ function App() {
     window.setTimeout(() => setCelebratingPlayerId(null), 900);
   };
 
+  const reshuffleGroupTable = () => {
+    setGroupShuffleNonce((current) => current + 1);
+  };
+
   const setPlayerActive = (playerId, active) => {
     const nextPlayers = players.map((player) => (player.id === playerId ? { ...player, active } : player));
     const nextQueue = rebuildRotationQueue(nextPlayers, rotationQueue);
@@ -2419,6 +2580,92 @@ function App() {
     setShowFlowStep('ready');
   };
 
+  const launchConfiguredGroupDuel = (match, matchCursor = 0) => {
+    if (!match) return;
+
+    setDuelSeats({
+      playerA: match.playerA.id,
+      playerB: match.playerB.id,
+    });
+    setLockedWinnerId(null);
+    dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: match.matchNumber });
+    patchShowState({
+      duelLaunched: true,
+      groupDuelMode: true,
+      groupDuelCursor: matchCursor,
+      groupDuelIntroEndsAt: null,
+      groupDuel: match,
+      flowStep: 'groupDuel',
+    });
+    navigateToScreen('hostPanel');
+  };
+
+  const startGroupDuel = () => {
+    if (!showCurrentGroupDuel) return;
+
+    if (showFlowTimeoutRef.current) {
+      window.clearTimeout(showFlowTimeoutRef.current);
+      showFlowTimeoutRef.current = null;
+    }
+
+    setDuelSeats({
+      playerA: showCurrentGroupDuel.playerA.id,
+      playerB: showCurrentGroupDuel.playerB.id,
+    });
+    setLockedWinnerId(null);
+    setShowDuelNames({
+      left: `#${String(showCurrentGroupDuel.playerA.playerNumber).padStart(2, '0')} ${showCurrentGroupDuel.playerA.name}`,
+      right: `#${String(showCurrentGroupDuel.playerB.playerNumber).padStart(2, '0')} ${showCurrentGroupDuel.playerB.name}`,
+    });
+    setShowDuelSelection({
+      leftId: showCurrentGroupDuel.playerA.id,
+      rightId: showCurrentGroupDuel.playerB.id,
+    });
+    patchShowState({
+      duelLaunched: false,
+      groupDuelMode: true,
+      groupDuelCursor: showGroupDuelCursor,
+      groupDuelIntroEndsAt: Date.now() + 5000,
+      groupDuel: showCurrentGroupDuel,
+      flowStep: 'groupIntro',
+    });
+
+    showFlowTimeoutRef.current = window.setTimeout(() => {
+      launchConfiguredGroupDuel(showCurrentGroupDuel, showGroupDuelCursor);
+      showFlowTimeoutRef.current = null;
+    }, 5000);
+  };
+
+  const advanceGroupDuel = () => {
+    const nextCursor = showGroupDuelCursor + 1;
+    const nextMatch = showGroupDuelQueue[nextCursor] ?? null;
+    if (!nextMatch) {
+      patchShowState({
+        duelLaunched: false,
+        groupDuelMode: false,
+        groupDuelCursor: 0,
+        groupDuelIntroEndsAt: null,
+        groupDuel: null,
+        flowStep: 'groups',
+      });
+      return;
+    }
+
+    patchShowState({
+      duelLaunched: false,
+      groupDuelMode: true,
+      groupDuelCursor: nextCursor,
+      groupDuelIntroEndsAt: null,
+      groupDuel: nextMatch,
+      flowStep: 'groupIntro',
+    });
+
+    showFlowTimeoutRef.current = window.setTimeout(() => {
+      launchConfiguredGroupDuel(nextMatch, nextCursor);
+      showFlowTimeoutRef.current = null;
+    }, 5000);
+  };
+
   const advanceShowToThemeWheel = () => {
     if (showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId) return;
     patchShowState({
@@ -2651,8 +2898,8 @@ function App() {
       playerB: playerBId,
     });
     setLockedWinnerId(null);
-    patchShowState({ duelLaunched: true });
     dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: liveState.currentDuel });
+    patchShowState({ duelLaunched: true });
     navigateToScreen('hostPanel');
   };
 
@@ -2704,6 +2951,23 @@ function App() {
 
     if (!winnerPlayer || !loserPlayer) {
       dispatchLiveAction({ type: 'NEXT_DUEL' });
+      return;
+    }
+
+    if (showGroupDuelMode) {
+      setLastDuelWinnerId(winnerId);
+      setLockedWinnerId(null);
+      patchShowState({ duelLaunched: false, groupDuelMode: true, groupDuel: null });
+      if (showNextGroupDuel) {
+        advanceGroupDuel();
+      } else {
+        patchShowState({
+          groupDuelMode: false,
+          groupDuelCursor: 0,
+          groupDuelIntroEndsAt: null,
+          flowStep: 'groups',
+        });
+      }
       return;
     }
 
@@ -3283,8 +3547,32 @@ function App() {
               </div>
             </div>
           ) : null}
-          {renderLiveShowAudienceCard(false, false)}
+          {showGroupDuelMode ? renderLiveShowAudienceCardGroup(false, false) : renderLiveShowAudienceCard(false, false)}
         </>
+      ) : null}
+
+      {!showDuelLaunched && showFlowStep === 'groupIntro' ? (
+        <section className="broadcast-card show-intro-stage">
+          <div className="show-badge">GRUPOS</div>
+          <div className="show-intro-kicker">{showCurrentGroupDuel ? showCurrentGroupDuel.title : 'Duelo de grupos'}</div>
+          <h2>{showCurrentGroupDuel ? `Duelo de grupos #${showCurrentGroupDuelNumber}` : 'Duelo de grupos'}</h2>
+          <p>{showCurrentGroupDuel ? showCurrentGroupDuel.subtitle : 'Preparando el siguiente duelo de grupos.'}</p>
+          <div className="show-intro-hero">
+            <div className="show-intro-card">
+              <span>Jugador A</span>
+              <strong>{showCurrentGroupDuel ? `#${String(showCurrentGroupDuel.playerA.playerNumber).padStart(2, '0')} ${showCurrentGroupDuel.playerA.name}` : 'Pendiente'}</strong>
+            </div>
+            <div className="show-intro-card">
+              <span>Jugador B</span>
+              <strong>{showCurrentGroupDuel ? `#${String(showCurrentGroupDuel.playerB.playerNumber).padStart(2, '0')} ${showCurrentGroupDuel.playerB.name}` : 'Pendiente'}</strong>
+            </div>
+            <div className="show-intro-card">
+              <span>Arranque</span>
+              <strong>5s</strong>
+            </div>
+          </div>
+          <p className="brand-subtitle">Arranca solo y después pasa al panel de duelo.</p>
+        </section>
       ) : null}
 
       {!showDuelLaunched && showFlowStep === 'intro' ? (
@@ -3296,7 +3584,7 @@ function App() {
           <div className="show-badge">BIENVENIDA</div>
           <div className="show-intro-kicker">🎤 Trivia live • luces arriba • público listo</div>
           <h2>L&apos;Imbatiblú ya está al aire</h2>
-          <p>Brillo encendido, sala cargada y tablero en ebullición. Cuando quieras, tocá <strong>Ir al ranking</strong> para mostrar la tabla general y anunciar el próximo cruce.</p>
+          <p>Brillo encendido, sala cargada y tablero en ebullición. Cuando quieras, tocá <strong>Ir a la tabla de grupos</strong> para mostrar el armado inicial y arrancar el show desde ahí.</p>
           <div className="show-intro-hero">
             <div className="show-intro-card">
               <span>Jugadores</span>
@@ -3311,7 +3599,49 @@ function App() {
               <strong>Se viene el #{liveState.currentDuel}</strong>
             </div>
           </div>
-          <p className="brand-subtitle">Esperando que el host mande la pantalla al ranking.</p>
+          <p className="brand-subtitle">Esperando que el host mande la pantalla a la tabla de grupos.</p>
+        </section>
+      ) : null}
+
+      {!showDuelLaunched && showFlowStep === 'groups' ? (
+        <section className="broadcast-card show-groups-stage">
+          <div className="show-badge">GRUPOS</div>
+          <h2>Tabla de grupos</h2>
+          <p>Este es el MVP de armado inicial: acomodamos a los jugadores en grupos óptimos de alrededor de 4 integrantes.</p>
+          <div className="show-group-stats">
+            <div className="summary-card"><span>Jugadores</span><strong>{showGroupTable.totalPlayers}</strong></div>
+            <div className="summary-card"><span>Grupos</span><strong>{showGroupTable.groupCount}</strong></div>
+            <div className="summary-card"><span>Promedio</span><strong>{showGroupTable.groupCount ? showGroupTable.averageSize.toFixed(1) : '0.0'}</strong></div>
+          </div>
+          <div className="show-groups-grid">
+            {showGroupTable.groups.length ? showGroupTable.groups.map((group) => (
+              <article className="show-group-card" key={`show-group-${group.label}`}>
+                <div className="show-group-head">
+                  <strong>{group.label}</strong>
+                  <span>{group.players.length} jugadores</span>
+                </div>
+                <div className="show-group-list">
+                  {group.players.length ? group.players.map((player) => (
+                    <div className="show-group-player player-theme-surface" key={`show-group-${group.label}-${player.id}`} style={getPlayerThemeStyle(player)}>
+                      <strong>#{String(player.playerNumber).padStart(2, '0')}</strong>
+                      <span className="show-group-player-copy">
+                        <strong>{player.name}</strong>
+                        <small>Puntaje total obtenido hasta ahora: {player.points}</small>
+                      </span>
+                    </div>
+                  )) : (
+                    <div className="show-group-empty">Pendiente</div>
+                  )}
+                </div>
+              </article>
+            )) : (
+              <div className="show-group-empty show-group-empty-full">Todavía no hay jugadores cargados</div>
+            )}
+          </div>
+          <div className="broadcast-actions">
+            <button className="primary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={reshuffleGroupTable}>Re-shufflear grupos</button>
+          </div>
         </section>
       ) : null}
 
@@ -3767,7 +4097,62 @@ function App() {
               <div><span>Duelo</span><strong>#{liveState.currentDuel}</strong></div>
             </div>
             <div className="broadcast-actions">
-              <button className="primary-action" type="button" onClick={() => setShowFlowStep('standby')}>Ir al ranking</button>
+              <button className="primary-action" type="button" onClick={() => setShowFlowStep('groups')}>Ir a la tabla de grupos</button>
+            </div>
+            <div className="broadcast-actions">
+              <button className="primary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Comenzar duelo</button>
+              <button className="secondary-action" type="button" onClick={reshuffleGroupTable}>Re-shufflear grupos</button>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'groupIntro' ? (
+          <>
+            <h2>{showCurrentGroupDuel ? `Duelo de grupos #${showCurrentGroupDuelNumber}` : 'Duelo de grupos'}</h2>
+            <p>{showCurrentGroupDuel ? showCurrentGroupDuel.subtitle : 'Preparando el siguiente duelo de grupos.'}</p>
+            <div className="broadcast-metrics">
+              <div><span>Grupo</span><strong>{showCurrentGroupDuel?.groupLabel ?? 'Pendiente'}</strong></div>
+              <div><span>Duelo</span><strong>{showCurrentGroupDuel ? `#${showCurrentGroupDuelNumber}` : 'Pendiente'}</strong></div>
+              <div><span>Arranque</span><strong>5s</strong></div>
+            </div>
+          </>
+        ) : null}
+
+        {showFlowStep === 'groups' ? (
+          <>
+            <div className="show-group-table-head">
+              <h2>Tabla de grupos</h2>
+              <p>MVP de pantalla: organizamos a los jugadores en grupos balanceados, con reparto random y tamaño objetivo 4.</p>
+            </div>
+            <div className="show-group-stats">
+              <div className="summary-card"><span>Jugadores</span><strong>{showGroupTable.totalPlayers}</strong></div>
+              <div className="summary-card"><span>Grupos</span><strong>{showGroupTable.groupCount}</strong></div>
+              <div className="summary-card"><span>Promedio</span><strong>{showGroupTable.groupCount ? showGroupTable.averageSize.toFixed(1) : '0.0'}</strong></div>
+            </div>
+            <div className="show-groups-grid">
+              {showGroupTable.groups.length ? showGroupTable.groups.map((group) => (
+                <article className="show-group-card" key={`broadcast-${group.label}`}>
+                  <div className="show-group-head">
+                    <strong>{group.label}</strong>
+                    <span>{group.players.length} jugadores</span>
+                  </div>
+                  <div className="show-group-list">
+                  {group.players.length ? group.players.map((player) => (
+                    <div className="show-group-player player-theme-surface" key={`broadcast-${group.label}-${player.id}`} style={getPlayerThemeStyle(player)}>
+                      <strong>#{String(player.playerNumber).padStart(2, '0')}</strong>
+                      <span className="show-group-player-copy">
+                        <strong>{player.name}</strong>
+                        <small>Puntaje total obtenido hasta ahora: {player.points}</small>
+                      </span>
+                    </div>
+                  )) : (
+                    <div className="show-group-empty">Pendiente</div>
+                  )}
+                  </div>
+                </article>
+              )) : (
+                <div className="show-group-empty show-group-empty-full">Todavía no hay jugadores cargados</div>
+              )}
             </div>
           </>
         ) : null}
@@ -4019,7 +4404,7 @@ function App() {
 
   const renderBroadcastShowMirror = () => (
     <div className="broadcast-grid broadcast-show-grid">
-      {showDuelLaunched ? renderLiveShowAudienceCard() : renderBroadcastShowStage()}
+      {showDuelLaunched ? (showGroupDuelMode ? renderLiveShowAudienceCardGroup() : renderLiveShowAudienceCard()) : renderBroadcastShowStage()}
     </div>
   );
 
@@ -4130,6 +4515,68 @@ function App() {
     </section>
   );
 
+  const renderLiveShowAudienceCardGroup = (compact = false, showBuzzOverlay = true) => renderLiveShowAudienceCard(compact, showBuzzOverlay);
+  const renderBroadcastScoreTabGroup = () => {
+    const duelCards = [
+      { side: 'playerA', player: duelSeatPlayerA, label: 'Jugador A' },
+      { side: 'playerB', player: duelSeatPlayerB, label: 'Jugador B' },
+    ];
+
+    return (
+      <section className="broadcast-card score-control-card">
+        <div className="broadcast-card-head">
+          <span className="machine-chip">PUNTAJE</span>
+          <span className="machine-chip secondary">{showDuelLaunched ? `Duelo #${liveState.currentDuel}` : 'Sin duelo activo'}</span>
+        </div>
+        <h2>Editar puntaje del duelo</h2>
+        <p>Usá estos controles para corregir robos y respuestas correctas sin tocar el ranking general.</p>
+
+        <div className="score-control-grid">
+          {duelCards.map(({ side, player, label }) => (
+            <article
+              key={side}
+              className="score-control-player player-theme-surface"
+              style={getPlayerThemeStyle(player ?? { playerNumber: side === 'playerA' ? 1 : 2, themeId: side === 'playerA' ? duelSeatThemeA.id : duelSeatThemeB.id })}
+            >
+              <div className="score-control-player-head">
+                <div>
+                  <span className="player-index">{label}</span>
+                  <h3>{player ? `#${String(player.playerNumber).padStart(2, '0')} - ${player.name.toUpperCase()}` : 'Esperando jugador'}</h3>
+                </div>
+                <div className="score-control-current">
+                  <span>Puntaje</span>
+                  <strong>{liveState.scoreboard[side]}</strong>
+                </div>
+              </div>
+
+              <div className="score-control-row">
+                <div className="score-control-labels">
+                  <span>ROBO</span>
+                  <small>{player?.stealsWon ?? 0} robos</small>
+                </div>
+                <div className="score-control-actions">
+                  <button className="secondary-action" type="button" onClick={() => adjustDuelScore(side, 'steal', 1)} disabled={!player}>+1</button>
+                  <button className="secondary-action" type="button" onClick={() => adjustDuelScore(side, 'steal', -1)} disabled={!player}>-1</button>
+                </div>
+              </div>
+
+              <div className="score-control-row">
+                <div className="score-control-labels">
+                  <span>RESPUESTA CORRECTA</span>
+                  <small>Punto directo</small>
+                </div>
+                <div className="score-control-actions">
+                  <button className="secondary-action action-success" type="button" onClick={() => adjustDuelScore(side, 'response', 1)} disabled={!player}>+1</button>
+                  <button className="secondary-action action-danger" type="button" onClick={() => adjustDuelScore(side, 'response', -1)} disabled={!player}>-1</button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  };
+
   const renderBroadcastShowHostActions = () => (
     <section className="broadcast-card conductor-card">
       <div className="broadcast-card-head">
@@ -4142,7 +4589,13 @@ function App() {
       </p>
       <div className="broadcast-actions">
         {showFlowStep === 'intro' ? (
-          <button className="primary-action" type="button" onClick={() => setShowFlowStep('standby')}>Ir al ranking</button>
+          <button className="primary-action" type="button" onClick={() => setShowFlowStep('groups')}>Ir a la tabla de grupos</button>
+        ) : null}
+        {showFlowStep === 'groups' ? (
+          <>
+            <button className="primary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={reshuffleGroupTable}>Re-shufflear grupos</button>
+          </>
         ) : null}
         {showFlowStep === 'standby' ? (
           <button className="primary-action" type="button" onClick={startShowDuelDraw} disabled={showEligiblePlayers.length < 2}>Sortear duelo</button>
@@ -4342,7 +4795,7 @@ function App() {
               <span> {hostMustAdvanceDuel ? 'El duelo ya terminó. Tocá `Siguiente duelo` antes de cargar otra pregunta.' : hostCanOverrideTurn ? `${liveState.message} Podés cambiar el turno antes de revelar la pregunta.` : liveState.message}</span>
             </div>
           </section>
-          {renderBroadcastScoreTab()}
+          {showGroupDuelMode ? renderBroadcastScoreTabGroup() : renderBroadcastScoreTab()}
         </div>
       )}
     </section>

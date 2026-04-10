@@ -1166,7 +1166,7 @@
     "answer": "Vaya",
     "theme": "Juegos de mesa",
     "difficulty": "Facil",
-    "used": true,
+    "used": false,
     "approved": true
   },
   {
@@ -1175,7 +1175,7 @@
     "answer": "64",
     "theme": "Juegos de mesa",
     "difficulty": "Facil",
-    "used": true,
+    "used": false,
     "approved": true
   },
   {
@@ -1184,7 +1184,7 @@
     "answer": "12",
     "theme": "Juegos de mesa",
     "difficulty": "Facil",
-    "used": true,
+    "used": false,
     "approved": true
   },
   {
@@ -1193,7 +1193,7 @@
     "answer": "Caballo",
     "theme": "Juegos de mesa",
     "difficulty": "Facil",
-    "used": true,
+    "used": false,
     "approved": true
   },
   {

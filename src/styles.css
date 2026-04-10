@@ -1254,6 +1254,135 @@ html {
   color: var(--ink);
 }
 
+.show-groups-stage {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  background:
+    radial-gradient(circle at top right, rgba(255, 212, 0, 0.18), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(8, 181, 170, 0.14), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 239, 0.96));
+}
+
+.show-group-table-head {
+  display: grid;
+  gap: 6px;
+}
+
+.show-group-table-head h2 {
+  margin: 0;
+  font-size: clamp(1.8rem, 3.6vw, 2.6rem);
+  line-height: 1;
+}
+
+.show-group-table-head p {
+  margin: 0;
+  max-width: 60ch;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.show-groups-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.show-group-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.show-group-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 0 var(--shadow);
+}
+
+.show-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.show-group-head strong {
+  font-size: 1.1rem;
+}
+
+.show-group-head span {
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(31, 26, 23, 0.74);
+}
+
+.show-group-list {
+  display: grid;
+  gap: 8px;
+}
+
+.show-group-player {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--shadow);
+}
+
+.show-group-player strong {
+  font-size: 1rem;
+}
+
+.show-group-player span {
+  text-align: right;
+  font-weight: 800;
+}
+
+.show-group-player-copy {
+  display: grid;
+  gap: 2px;
+  align-items: center;
+  text-align: right;
+}
+
+.show-group-player-copy strong {
+  font-size: 0.98rem;
+  line-height: 1.1;
+}
+
+.show-group-player-copy small {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  opacity: 0.86;
+}
+
+.show-group-empty {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+  border: 2px dashed rgba(31, 26, 23, 0.22);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  font-weight: 800;
+  color: rgba(31, 26, 23, 0.72);
+}
+
+.show-group-empty-full {
+  grid-column: 1 / -1;
+}
+
 .show-standby-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5303,8 +5432,13 @@ html {
 
   .show-intro-hero,
   .show-ready-hero,
+  .show-groups-grid,
   .show-draw-split,
   .show-versus-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .show-group-stats {
     grid-template-columns: 1fr;
   }
 
