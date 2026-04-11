@@ -113,7 +113,7 @@
     "answer": "Leon",
     "theme": "Cultura General",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -122,7 +122,7 @@
     "answer": "Azul",
     "theme": "Cultura General",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -671,7 +671,7 @@
     "answer": "Navegador",
     "theme": "Tecnologia",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -806,7 +806,7 @@
     "answer": "Influencer",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -815,7 +815,7 @@
     "answer": "Link",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -824,7 +824,7 @@
     "answer": "Nintendo",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -833,7 +833,7 @@
     "answer": "Sonic",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -842,7 +842,7 @@
     "answer": "Bloques",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -851,7 +851,7 @@
     "answer": "PlayStation",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -860,7 +860,7 @@
     "answer": "Fortnite",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -878,7 +878,7 @@
     "answer": "Pikachu",
     "theme": "Gaming",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {
@@ -1067,7 +1067,7 @@
     "answer": "Book",
     "theme": "Idiomas",
     "difficulty": "Facil",
-    "used": false,
+    "used": true,
     "approved": true
   },
   {

@@ -62,6 +62,8 @@ function buildIdleTimer() {
   };
 }
 
+const GROUP_DUEL_QUESTION_LIMIT = 6;
+
 export function buildInitialShowState() {
   return {
     flowStep: 'intro',
@@ -100,6 +102,19 @@ function buildOutcome(state, status, side) {
 function resolveScore(state, scorerSide, message) {
   const nextScore = Math.max(0, state.scoreboard[scorerSide] + 1);
   const duelEndIndex = LIVE_PHASES.findIndex((phase) => phase.id === 'duel_end');
+
+  if (state.duelFormat === 'groups') {
+    return finalizeGroupDuelProgress({
+      ...state,
+      scoreboard: {
+        ...state.scoreboard,
+        [scorerSide]: nextScore,
+      },
+      phaseIndex: Math.max(state.phaseIndex, 4),
+      lastAction: 'SCORE_UPDATE',
+    }, message);
+  }
+
   const duelWon = nextScore >= 5;
 
   return {
@@ -116,9 +131,52 @@ function resolveScore(state, scorerSide, message) {
   };
 }
 
+function finalizeGroupDuelProgress(state, message) {
+  const duelEndIndex = LIVE_PHASES.findIndex((phase) => phase.id === 'duel_end');
+  const resolvedQuestionCount = Math.min(GROUP_DUEL_QUESTION_LIMIT, (state.resolvedQuestionCount ?? 0) + 1);
+  const scorePlayerA = state.scoreboard.playerA ?? 0;
+  const scorePlayerB = state.scoreboard.playerB ?? 0;
+
+  if (resolvedQuestionCount < GROUP_DUEL_QUESTION_LIMIT) {
+    return {
+      ...state,
+      resolvedQuestionCount,
+      duelFinished: false,
+      duelWinnerSide: null,
+      duelResult: null,
+      message,
+    };
+  }
+
+  if (scorePlayerA === scorePlayerB) {
+    return {
+      ...state,
+      resolvedQuestionCount,
+      duelFinished: true,
+      duelWinnerSide: null,
+      duelResult: 'tie',
+      phaseIndex: duelEndIndex,
+      message: 'Empate en el duelo de grupos',
+    };
+  }
+
+  const duelWinnerSide = scorePlayerA > scorePlayerB ? 'playerA' : 'playerB';
+
+  return {
+    ...state,
+    resolvedQuestionCount,
+    duelFinished: true,
+    duelWinnerSide,
+    duelResult: 'win',
+    phaseIndex: duelEndIndex,
+    message: `${state.teamNames[duelWinnerSide]} ganó el duelo de grupos`,
+  };
+}
+
 export const initialLiveState = {
   phaseIndex: 0,
   currentDuel: 1,
+  duelFormat: 'standard',
   currentTheme: 'Historia',
   currentQuestionId: null,
   question: 'Esperando una pregunta del host',
@@ -142,6 +200,8 @@ export const initialLiveState = {
   },
   duelWinnerSide: null,
   duelFinished: false,
+  duelResult: null,
+  resolvedQuestionCount: 0,
   teamNames: {
     playerA: 'Jugador A',
     playerB: 'Jugador B',
@@ -284,6 +344,7 @@ export function liveReducer(state, action) {
         connectedClients: state.connectedClients,
         teamNames: state.teamNames,
         currentDuel: action.currentDuel ?? state.currentDuel,
+        duelFormat: action.duelFormat === 'groups' ? 'groups' : 'standard',
         duelFinished: false, // Explicitly ensure duelFinished is reset
       };
     case 'NEXT_DUEL':
@@ -312,6 +373,9 @@ export function liveReducer(state, action) {
         },
         duelWinnerSide: null,
         duelFinished: false,
+        duelResult: null,
+        resolvedQuestionCount: 0,
+        duelFormat: 'standard',
         phaseIndex: 0,
         message: `Arranca el duelo ${state.currentDuel + 1}`,
         lastAction: 'NEXT_DUEL',
@@ -465,7 +529,7 @@ export function liveReducer(state, action) {
       if (state.timer.mode === 'steal') {
         if (state.stealAvailable && !hasResponder) {
           const nextTurnSide = oppositeSide(state.turnSide);
-          return {
+          const nextState = {
             ...state,
             stealAvailable: false,
             currentQuestionId: null,
@@ -486,6 +550,7 @@ export function liveReducer(state, action) {
             message: 'Tiempo agotado',
             lastAction: 'TICK_TIMER_STEAL_TIMEOUT',
           };
+          return state.duelFormat === 'groups' ? finalizeGroupDuelProgress(nextState, nextState.message) : nextState;
         }
 
         console.warn('Timer expired in steal mode with an inconsistent state, forcing resolution.', {
@@ -496,7 +561,7 @@ export function liveReducer(state, action) {
         });
 
         const nextTurnSide = oppositeSide(state.turnSide);
-        return {
+        const nextState = {
           ...state,
           stealAvailable: false,
           currentQuestionId: null,
@@ -517,11 +582,12 @@ export function liveReducer(state, action) {
           message: 'Tiempo agotado',
           lastAction: 'TICK_TIMER_STEAL_TIMEOUT',
         };
+        return state.duelFormat === 'groups' ? finalizeGroupDuelProgress(nextState, nextState.message) : nextState;
       }
 
       if (!hasResponder && !hasOutcome) {
         const nextTurnSide = oppositeSide(state.turnSide);
-        return {
+        const nextState = {
           ...state,
           stealAvailable: false,
           currentQuestionId: null,
@@ -542,6 +608,7 @@ export function liveReducer(state, action) {
           message: 'Tiempo agotado',
           lastAction: 'TICK_TIMER_QUESTION_TIMEOUT',
         };
+        return state.duelFormat === 'groups' ? finalizeGroupDuelProgress(nextState, nextState.message) : nextState;
       }
 
       if (hasResponder && !hasOutcome) {
@@ -620,7 +687,7 @@ export function liveReducer(state, action) {
         ? `${state.teamNames[wrongSide]} falló el robo`
         : `${state.teamNames[wrongSide]} falló. Se terminó la jugada.`;
 
-      return {
+      const nextState = {
         ...state,
         stealAvailable: false,
         currentQuestionId: null,
@@ -638,10 +705,12 @@ export function liveReducer(state, action) {
         turnLabel: isSteal ? 'Robo incorrecto' : 'Respuesta incorrecta',
         lastAction: 'MARK_RESPONSE_WRONG',
       };
+      return state.duelFormat === 'groups' ? finalizeGroupDuelProgress(nextState, message) : nextState;
     }
 
     case 'MARK_NO_RESPONSE':
-      return {
+      {
+      const nextState = {
         ...state,
         stealAvailable: false,
         currentQuestionId: null,
@@ -659,6 +728,8 @@ export function liveReducer(state, action) {
         turnLabel: buildTurnMessage(state, oppositeSide(state.turnSide), 'Turno de'),
         lastAction: 'MARK_NO_RESPONSE',
       };
+      return state.duelFormat === 'groups' ? finalizeGroupDuelProgress(nextState, nextState.message) : nextState;
+      }
     case 'MARK_STEAL_CORRECT': {
       const scorerSide = action.side ?? state.responderSide ?? oppositeSide(state.turnSide);
       return {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import QRCode from 'qrcode';
 import buzzerSoundUrl from '../buzzer.mp3?url';
@@ -22,7 +22,6 @@ const initialWheelThemes = [
   { label: 'Cultura General', emoji: '📚' },
   { label: 'Geografía', emoji: '🌍' },
   { label: 'Historia', emoji: '🏛️' },
-  { label: 'Comida', emoji: '🍔' },
   { label: 'Series y películas', emoji: '🎬' },
   { label: 'Música', emoji: '🎵' },
   { label: 'Tecnología', emoji: '💻' },
@@ -30,18 +29,21 @@ const initialWheelThemes = [
   { label: 'Gaming', emoji: '🎮' },
   { label: 'Deportes', emoji: '⚽' },
   { label: 'Idiomas', emoji: '🌐' },
-  { label: 'Ortografía', emoji: '✍️' },
   { label: 'Juegos de mesa', emoji: '🎲' },
 ];
 function normalizeWheelThemesCollection(themes) {
+  const blockedLabels = new Set(['Comida', 'Ortografía']);
   if (!Array.isArray(themes) || !themes.length) {
     return initialWheelThemes;
   }
 
-  return themes.map((theme, index) => ({
+  const normalizedThemes = themes.map((theme, index) => ({
     label: typeof theme?.label === 'string' && theme.label.trim() ? theme.label.trim() : initialWheelThemes[index]?.label ?? `Tema ${index + 1}`,
     emoji: typeof theme?.emoji === 'string' && theme.emoji.trim() ? theme.emoji.trim() : initialWheelThemes[index]?.emoji ?? '🎯',
   }));
+
+  const filteredThemes = normalizedThemes.filter((theme) => !blockedLabels.has(theme.label));
+  return filteredThemes.length ? filteredThemes : initialWheelThemes;
 }
 
 function shuffleCollection(collection) {
@@ -122,8 +124,6 @@ function buildOptimizedGroupTable(players, shuffleNonce = 0) {
       const randomIndex = Math.floor(seedRandom(shuffleNonce + index) * (index + 1));
       [shuffledPlayers[index], shuffledPlayers[randomIndex]] = [shuffledPlayers[randomIndex], shuffledPlayers[index]];
     }
-  } else {
-    shuffledPlayers = shuffleCollection(players);
   }
   const baseSize = Math.floor(totalPlayers / groupCount);
   const remainder = totalPlayers % groupCount;
@@ -211,9 +211,9 @@ const KNOWN_SCREENS = new Set(['menu', 'hostPanel', 'showPanel', 'playersPanel',
 const SHOW_FLOW_STEPS = ['intro', 'standby', 'draw', 'rollers', 'versus', 'ready'];
 
 const initialPlayers = [
-  { id: 'p1', playerNumber: 1, name: 'Agus', points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
-  { id: 'p2', playerNumber: 2, name: 'Lola', points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
-  { id: 'p3', playerNumber: 3, name: 'Nico', points: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
+  { id: 'p1', playerNumber: 1, name: 'Agus', points: 0, groupStagePoints: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
+  { id: 'p2', playerNumber: 2, name: 'Lola', points: 0, groupStagePoints: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
+  { id: 'p3', playerNumber: 3, name: 'Nico', points: 0, groupStagePoints: 0, roundsWon: 0, stealsWon: 0, winStreak: 0, active: true, imbatible: false },
 ];
 
 const PLAYER_THEME_PALETTE = [
@@ -309,6 +309,7 @@ function normalizePlayerAccessCode(player) {
   return {
     ...player,
     accessCode: existingCode ? existingCode.toUpperCase() : buildPlayerAccessCode(player),
+    groupStagePoints: Number.isFinite(player.groupStagePoints) ? player.groupStagePoints : 0,
     themeId: theme.id,
     themeLabel: theme.label,
   };
@@ -354,8 +355,15 @@ const playFlowSteps = [
     buttonLabel: 'Abrir host',
   },
   {
-    id: 'final',
+    id: 'ranking',
     kicker: '04',
+    title: 'Ranking',
+    description: 'Cortá la etapa de grupos cuando quieras y arrancá el ciclo normal de ranking con los jugadores cargados.',
+    buttonLabel: 'Ir al ranking',
+  },
+  {
+    id: 'final',
+    kicker: '05',
     title: 'Final',
     description: 'Revisá el ranking final con desempates y contendientes al cierre.',
     buttonLabel: 'Abrir final',
@@ -625,6 +633,7 @@ function buildSharedAppState({
   playerSortDirection,
   rotationQueue,
   duelSeats,
+  groupShuffleNonce,
   lockedWinnerId,
   lastDuelWinnerId,
   wheelThemes,
@@ -636,6 +645,7 @@ function buildSharedAppState({
     playerSortDirection,
     rotationQueue,
     duelSeats,
+    groupShuffleNonce,
     lockedWinnerId,
     lastDuelWinnerId,
     wheelThemes,
@@ -697,6 +707,7 @@ function App() {
   const showDrawSettleTimeoutRef = useRef(null);
   const showDrawNeedsSettleRef = useRef(false);
   const showDrawAnimationPrimedRef = useRef(false);
+  const showGroupIntroIntervalRef = useRef(null);
   const showSpinnerAnimationFrameRef = useRef(null);
   const showAnimatedSpinnerOffsetsRef = useRef({ left: 0, right: 0 });
   const [showAnimatedSpinnerOffsets, setShowAnimatedSpinnerOffsets] = useState({ left: 0, right: 0 });
@@ -734,6 +745,7 @@ function App() {
   const [wheelEditOpen, setWheelEditOpen] = useState(false);
   const [wheelEditDraft, setWheelEditDraft] = useState([]);
   const [groupShuffleNonce, setGroupShuffleNonce] = useState(buildInitialGroupShuffleNonce);
+  const [groupIntroCountdown, setGroupIntroCountdown] = useState(0);
   const [editQuestionDraft, setEditQuestionDraft] = useState({
     prompt: '',
     answer: '',
@@ -897,6 +909,7 @@ function App() {
     const nextPlayers = players.map((player) => ({
       ...player,
       points: 0,
+      groupStagePoints: 0,
       roundsWon: 0,
       stealsWon: 0,
       winStreak: 0,
@@ -915,6 +928,7 @@ function App() {
       playerSortDirection,
       rotationQueue: normalizedQueue,
       duelSeats: nextDuelSeats,
+      groupShuffleNonce,
       lockedWinnerId: null,
       lastDuelWinnerId: null,
       finalBracket: normalizeFinalBracketState(null),
@@ -961,6 +975,10 @@ function App() {
       patchShowState({ introExiting: false });
     }
     navigateToScreen('showPanel');
+  };
+  const enterRankingMode = () => {
+    returnShowToStandby();
+    navigateToScreen('hostPanel');
   };
   const wheelStep = 360 / wheelThemes.length;
   const buildNextWheelSpin = (currentRotation) => {
@@ -1285,6 +1303,7 @@ function App() {
   const showCurrentGroupDuel = showGroupDuelQueue[showGroupDuelCursor] ?? null;
   const showNextGroupDuel = showGroupDuelQueue[showGroupDuelCursor + 1] ?? null;
   const showGroupDuelMode = Boolean(showState.groupDuelMode);
+  const liveGroupDuelTied = showGroupDuelMode && liveState.duelFinished && liveState.duelResult === 'tie';
   const showGroupDuelIntroEndsAt = typeof showState.groupDuelIntroEndsAt === 'number' ? showState.groupDuelIntroEndsAt : null;
   const showCurrentGroupDuelNumber = showCurrentGroupDuel?.matchNumber ?? showGroupDuelCursor + 1;
 
@@ -1344,10 +1363,14 @@ function App() {
   const currentThemeQuestions = useMemo(() => {
     return questions.filter((question) => question.theme === liveState.currentTheme);
   }, [questions, liveState.currentTheme]);
+  const allPlayableQuestions = useMemo(() => {
+    return questions.filter((question) => question.approved && !question.used);
+  }, [questions]);
   const currentThemePlayableQuestions = useMemo(() => {
     return currentThemeQuestions.filter((question) => question.approved && !question.used);
   }, [currentThemeQuestions]);
   const nextPlayableQuestion = currentThemePlayableQuestions[0] ?? null;
+  const hasAvailablePlayableQuestion = showGroupDuelMode ? allPlayableQuestions.length > 0 : Boolean(nextPlayableQuestion);
   const hasPreparedLiveQuestion = Boolean(
     liveState.currentQuestionId &&
     !liveState.questionVisible &&
@@ -1780,6 +1803,7 @@ function App() {
       playerSortDirection,
       rotationQueue,
       duelSeats,
+      groupShuffleNonce,
       lockedWinnerId,
       lastDuelWinnerId,
       wheelThemes,
@@ -1792,7 +1816,7 @@ function App() {
       type: 'SYNC_APP_STATE',
       payload: sharedAppState,
     });
-  }, [players, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, lockedWinnerId, lastDuelWinnerId, wheelThemes]);
+  }, [players, nextPlayerNumber, playerSortKey, playerSortDirection, rotationQueue, duelSeats, groupShuffleNonce, lockedWinnerId, lastDuelWinnerId, wheelThemes]);
 
   useEffect(() => {
     const serverUrl =
@@ -1834,6 +1858,7 @@ function App() {
           if (sharedAppState.playerSortDirection === 'desc' || sharedAppState.playerSortDirection === 'asc') setPlayerSortDirection(sharedAppState.playerSortDirection);
           if (Array.isArray(sharedAppState.rotationQueue)) setRotationQueue(sharedAppState.rotationQueue);
           if (sharedAppState.duelSeats && typeof sharedAppState.duelSeats === 'object') setDuelSeats(sharedAppState.duelSeats);
+          if (typeof sharedAppState.groupShuffleNonce === 'number' && sharedAppState.groupShuffleNonce >= 0) setGroupShuffleNonce(sharedAppState.groupShuffleNonce);
           if (typeof sharedAppState.lockedWinnerId === 'string' || sharedAppState.lockedWinnerId === null) setLockedWinnerId(sharedAppState.lockedWinnerId ?? null);
           if (!skipInitialSharedWheelThemesRef.current && Array.isArray(sharedAppState.wheelThemes) && sharedAppState.wheelThemes.length) {
             setWheelThemes(normalizeWheelThemesCollection(sharedAppState.wheelThemes));
@@ -1871,24 +1896,36 @@ function App() {
       window.clearTimeout(showFlowTimeoutRef.current);
       showFlowTimeoutRef.current = null;
     }
+    if (showGroupIntroIntervalRef.current) {
+      window.clearInterval(showGroupIntroIntervalRef.current);
+      showGroupIntroIntervalRef.current = null;
+    }
     if (showReadyIntervalRef.current) {
       window.clearInterval(showReadyIntervalRef.current);
       showReadyIntervalRef.current = null;
     }
 
-    if (screen !== 'showPanel') return undefined;
-
     if (showFlowStep === 'groupIntro') {
       const introEndsAt = showGroupDuelIntroEndsAt ?? (Date.now() + 5000);
+      const currentMatch = showCurrentGroupDuel;
+      const currentCursor = showGroupDuelCursor;
       if (!showGroupDuelIntroEndsAt) {
         patchShowState({ groupDuelIntroEndsAt: introEndsAt });
       }
 
+      const syncGroupIntroCountdown = () => {
+        setGroupIntroCountdown(Math.max(0, Math.ceil((introEndsAt - Date.now()) / 1000)));
+      };
+      syncGroupIntroCountdown();
+      showGroupIntroIntervalRef.current = window.setInterval(syncGroupIntroCountdown, 200);
+
       showFlowTimeoutRef.current = window.setTimeout(() => {
-        if (showCurrentGroupDuel) {
-          launchConfiguredGroupDuel(showCurrentGroupDuel, showGroupDuelCursor);
+        if (currentMatch) {
+          launchConfiguredGroupDuel(currentMatch, currentCursor);
         }
       }, Math.max(0, introEndsAt - Date.now()));
+    } else {
+      setGroupIntroCountdown(0);
     }
 
     if (showFlowStep === 'ready') {
@@ -1912,13 +1949,13 @@ function App() {
         window.clearTimeout(showFlowTimeoutRef.current);
         showFlowTimeoutRef.current = null;
       }
+      if (showGroupIntroIntervalRef.current) {
+        window.clearInterval(showGroupIntroIntervalRef.current);
+        showGroupIntroIntervalRef.current = null;
+      }
       if (showReadyIntervalRef.current) {
         window.clearInterval(showReadyIntervalRef.current);
         showReadyIntervalRef.current = null;
-      }
-      if (showFlowTimeoutRef.current && showFlowStep === 'groupIntro') {
-        window.clearTimeout(showFlowTimeoutRef.current);
-        showFlowTimeoutRef.current = null;
       }
     };
   }, [screen, showFlowStep, showGroupDuelIntroEndsAt, showCurrentGroupDuel, showGroupDuelCursor]);
@@ -2220,6 +2257,7 @@ function App() {
       themeId: theme.id,
       themeLabel: theme.label,
       points: 0,
+      groupStagePoints: 0,
       roundsWon: 0,
       stealsWon: 0,
       winStreak: 0,
@@ -2611,7 +2649,7 @@ function App() {
       playerB: match.playerB.id,
     });
     setLockedWinnerId(null);
-    dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: match.matchNumber });
+    dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: match.matchNumber, duelFormat: 'groups' });
     patchShowState({
       duelLaunched: true,
       groupDuelMode: true,
@@ -2620,7 +2658,6 @@ function App() {
       groupDuel: match,
       flowStep: 'groupDuel',
     });
-    navigateToScreen('hostPanel');
   };
 
   const startGroupDuel = () => {
@@ -2689,6 +2726,75 @@ function App() {
     }, 5000);
   };
 
+  const settleGroupDuelAndPrepareNext = (goToGroupsTable = false) => {
+    const playerAId = duelSeats.playerA;
+    const playerBId = duelSeats.playerB;
+    if (!playerAId || !playerBId) return;
+
+    setPlayers((current) => current.map((player) => {
+      if (liveGroupDuelTied && (player.id === playerAId || player.id === playerBId)) {
+        return { ...player, groupStagePoints: (player.groupStagePoints ?? 0) + 1 };
+      }
+      if (!liveGroupDuelTied && liveState.duelWinnerSide) {
+        const winnerId = liveState.duelWinnerSide === 'playerA' ? playerAId : playerBId;
+        if (player.id === winnerId) {
+          return { ...player, groupStagePoints: (player.groupStagePoints ?? 0) + 3 };
+        }
+      }
+      return player;
+    }));
+
+    setLastDuelWinnerId(
+      liveGroupDuelTied || !liveState.duelWinnerSide
+        ? null
+        : (liveState.duelWinnerSide === 'playerA' ? playerAId : playerBId),
+    );
+    setLockedWinnerId(null);
+
+    const nextCursor = showGroupDuelCursor + 1;
+    const nextMatch = showGroupDuelQueue[nextCursor] ?? null;
+
+    if (showFlowTimeoutRef.current) {
+      window.clearTimeout(showFlowTimeoutRef.current);
+      showFlowTimeoutRef.current = null;
+    }
+
+    if (!nextMatch) {
+      dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: liveState.currentDuel });
+      patchShowState({
+        duelLaunched: false,
+        groupDuelMode: false,
+        groupDuelCursor: 0,
+        groupDuelIntroEndsAt: null,
+        groupDuel: null,
+        flowStep: 'groups',
+      });
+      return;
+    }
+
+    dispatchLiveAction({ type: 'RESET_FLOW', currentDuel: nextMatch.matchNumber, duelFormat: 'groups' });
+    patchShowState({
+      duelLaunched: false,
+      groupDuelMode: true,
+      groupDuelCursor: nextCursor,
+      groupDuelIntroEndsAt: goToGroupsTable ? null : Date.now() + 5000,
+      groupDuel: nextMatch,
+      flowStep: goToGroupsTable ? 'groups' : 'groupIntro',
+    });
+
+    if (!goToGroupsTable) {
+      showFlowTimeoutRef.current = window.setTimeout(() => {
+        launchConfiguredGroupDuel(nextMatch, nextCursor);
+        showFlowTimeoutRef.current = null;
+      }, 5000);
+    }
+  };
+
+  const returnGroupDuelToTable = () => {
+    if (!liveState.duelFinished || !showGroupDuelMode) return;
+    settleGroupDuelAndPrepareNext(true);
+  };
+
   const advanceShowToThemeWheel = () => {
     if (showSpinnerActive || !showDuelSelection.leftId || !showDuelSelection.rightId) return;
     patchShowState({
@@ -2735,15 +2841,20 @@ function App() {
     if (showDuelLaunched) return;
     if (showFlowStep !== 'questions') return;
     if (liveState.duelFinished || liveState.questionVisible || liveState.currentQuestionId) return;
-    if (!nextPlayableQuestion) return;
+    const initialQuestion = showGroupDuelMode
+      ? (allPlayableQuestions[Math.floor(Math.random() * allPlayableQuestions.length)] ?? null)
+      : nextPlayableQuestion;
+    if (!initialQuestion) return;
     if (liveState.responseOutcome || liveState.revealAnswer || liveState.responderSide || liveState.buzzLockedSide) {
       dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
     }
 
-    prepareLiveQuestion(nextPlayableQuestion, resolveNextQuestionTurnSide(liveState));
+    prepareLiveQuestion(initialQuestion, resolveNextQuestionTurnSide(liveState));
   }, [
+    allPlayableQuestions,
     showDuelLaunched,
     showFlowStep,
+    showGroupDuelMode,
     liveState.duelFinished,
     liveState.questionVisible,
     liveState.currentQuestionId,
@@ -2755,15 +2866,38 @@ function App() {
     nextPlayableQuestion,
   ]);
 
+  useEffect(() => {
+    if (!showDuelLaunched || !showGroupDuelMode) return;
+    if (liveState.duelFinished || liveState.questionVisible || liveState.currentQuestionId) return;
+    const initialQuestion = allPlayableQuestions[Math.floor(Math.random() * allPlayableQuestions.length)] ?? null;
+    if (!initialQuestion) return;
+    if (liveState.responseOutcome || liveState.revealAnswer || liveState.responderSide || liveState.buzzLockedSide) {
+      dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
+    }
+    prepareLiveQuestion(initialQuestion, resolveNextQuestionTurnSide(liveState));
+  }, [
+    allPlayableQuestions,
+    showDuelLaunched,
+    showGroupDuelMode,
+    liveState.duelFinished,
+    liveState.questionVisible,
+    liveState.currentQuestionId,
+    liveState.responseOutcome,
+    liveState.revealAnswer,
+    liveState.responderSide,
+    liveState.buzzLockedSide,
+  ]);
+
   const prepareLiveQuestion = (question, turnSide = resolveNextQuestionTurnSide(liveState)) => {
     if (!question || liveState.duelFinished) return;
+    const nextTheme = showGroupDuelMode ? question.theme : liveState.currentTheme;
     setLiveQuestionDraft(question.prompt);
     setLiveAnswerDraft(question.answer);
-    liveDraftHydrationRef.current = `${liveState.currentTheme}::${question.prompt}::${question.answer}`;
+    liveDraftHydrationRef.current = `${nextTheme}::${question.prompt}::${question.answer}`;
     dispatchLiveAction({
       type: 'SET_QUESTION',
       questionId: question.id,
-      theme: liveState.currentTheme,
+      theme: nextTheme,
       question: question.prompt,
       answer: question.answer,
       turnSide,
@@ -2772,7 +2906,10 @@ function App() {
   };
 
   const prepareNextLiveQuestion = () => {
-    if (!nextPlayableQuestion || liveState.duelFinished) return;
+    const selectedQuestion = showGroupDuelMode
+      ? (allPlayableQuestions[Math.floor(Math.random() * allPlayableQuestions.length)] ?? null)
+      : nextPlayableQuestion;
+    if (!selectedQuestion || liveState.duelFinished) return;
     const skippingUnansweredQuestion = Boolean(
       liveState.currentQuestionId &&
       liveState.questionVisible &&
@@ -2788,14 +2925,15 @@ function App() {
     } else if (liveState.responseOutcome || liveState.revealAnswer || liveState.responderSide || liveState.buzzLockedSide) {
       dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
     }
-    prepareLiveQuestion(nextPlayableQuestion, nextTurnSide);
+    prepareLiveQuestion(selectedQuestion, nextTurnSide);
   };
 
   const rerollPreparedQuestion = () => {
     if (liveState.duelFinished || liveState.questionVisible || !liveState.currentQuestionId) return;
 
     const currentQuestionId = liveState.currentQuestionId;
-    const alternativeQuestions = currentThemeQuestions.filter((question) => question.approved && question.id !== currentQuestionId && !question.used);
+    const alternativeQuestions = (showGroupDuelMode ? allPlayableQuestions : currentThemeQuestions)
+      .filter((question) => question.approved && question.id !== currentQuestionId && !question.used);
     if (!alternativeQuestions.length) return;
 
     updateQuestion(currentQuestionId, (current) => ({
@@ -2820,17 +2958,20 @@ function App() {
       dispatchLiveAction({ type: 'REVEAL_QUESTION' });
       return;
     }
-    if (!nextPlayableQuestion) return;
+    const selectedQuestion = showGroupDuelMode
+      ? (allPlayableQuestions[Math.floor(Math.random() * allPlayableQuestions.length)] ?? null)
+      : nextPlayableQuestion;
+    if (!selectedQuestion) return;
     const nextTurnSide = resolveNextQuestionTurnSide(liveState);
     if (liveState.responseOutcome || liveState.revealAnswer || liveState.responderSide || liveState.buzzLockedSide) {
       dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
     }
-    prepareLiveQuestion(nextPlayableQuestion, nextTurnSide);
+    prepareLiveQuestion(selectedQuestion, nextTurnSide);
     dispatchLiveAction({ type: 'REVEAL_QUESTION' });
   };
 
   const startShowDuel = () => {
-    if (!hasPreparedLiveQuestion && !nextPlayableQuestion) return;
+    if (!hasPreparedLiveQuestion && !hasAvailablePlayableQuestion) return;
 
     if (showDuelSelection.leftId && showDuelSelection.rightId) {
       setDuelSeats({
@@ -2843,8 +2984,11 @@ function App() {
       dispatchLiveAction({ type: 'CLEAR_RESPONSE_OUTCOME' });
     }
 
-    if (!liveState.questionVisible && !liveState.currentQuestionId && nextPlayableQuestion) {
-      prepareLiveQuestion(nextPlayableQuestion, resolveNextQuestionTurnSide(liveState));
+    const selectedQuestion = showGroupDuelMode
+      ? (allPlayableQuestions[Math.floor(Math.random() * allPlayableQuestions.length)] ?? null)
+      : nextPlayableQuestion;
+    if (!liveState.questionVisible && !liveState.currentQuestionId && selectedQuestion) {
+      prepareLiveQuestion(selectedQuestion, resolveNextQuestionTurnSide(liveState));
     }
 
     patchShowState({ duelLaunched: true });
@@ -2866,7 +3010,7 @@ function App() {
   };
 
   const dispatchLiveAction = (action) => {
-    if (action.type === 'MARK_RESPONSE_CORRECT') {
+    if (!showGroupDuelMode && action.type === 'MARK_RESPONSE_CORRECT') {
       const scoringSide = action.side ?? liveState.responderSide ?? liveTurnSide;
       const targetPlayerId = scoringSide === 'playerB' ? duelSeats.playerB : duelSeats.playerA;
       if (targetPlayerId) {
@@ -2877,7 +3021,7 @@ function App() {
       }
     }
 
-    if (action.type === 'ADD_SCORE') {
+    if (!showGroupDuelMode && action.type === 'ADD_SCORE') {
       const targetPlayerId = action.side === 'playerB' ? duelSeats.playerB : duelSeats.playerA;
       if (targetPlayerId) {
         updatePlayerById(targetPlayerId, (player) => {
@@ -2893,7 +3037,7 @@ function App() {
       }
     }
 
-    if (action.type === 'MARK_STEAL_CORRECT') {
+    if (!showGroupDuelMode && action.type === 'MARK_STEAL_CORRECT') {
       const scoringSide = action.side ?? liveState.responderSide ?? liveStealSide;
       const targetPlayerId = scoringSide === 'playerA' ? duelSeats.playerA : duelSeats.playerB;
       if (targetPlayerId) {
@@ -2957,7 +3101,14 @@ function App() {
   };
 
   const applyDuelResultAndRotate = () => {
-    if (!liveState.duelFinished || !liveState.duelWinnerSide) return;
+    if (!liveState.duelFinished) return;
+
+    if (showGroupDuelMode) {
+      settleGroupDuelAndPrepareNext(false);
+      return;
+    }
+
+    if (!liveState.duelWinnerSide) return;
 
     const winnerSide = liveState.duelWinnerSide;
     const loserSide = winnerSide === 'playerA' ? 'playerB' : 'playerA';
@@ -2974,23 +3125,6 @@ function App() {
 
     if (!winnerPlayer || !loserPlayer) {
       dispatchLiveAction({ type: 'NEXT_DUEL' });
-      return;
-    }
-
-    if (showGroupDuelMode) {
-      setLastDuelWinnerId(winnerId);
-      setLockedWinnerId(null);
-      patchShowState({ duelLaunched: false, groupDuelMode: true, groupDuel: null });
-      if (showNextGroupDuel) {
-        advanceGroupDuel();
-      } else {
-        patchShowState({
-          groupDuelMode: false,
-          groupDuelCursor: 0,
-          groupDuelIntroEndsAt: null,
-          flowStep: 'groups',
-        });
-      }
       return;
     }
 
@@ -3470,7 +3604,19 @@ function App() {
             <h2>{playFlowSteps[playFlowStep].title}</h2>
             <p>{playFlowSteps[playFlowStep].description}</p>
             <div className="play-flow-actions">
-              <button className="primary-action" type="button" onClick={() => navigateToScreen(playFlowSteps[playFlowStep].id)}>{playFlowSteps[playFlowStep].buttonLabel}</button>
+              <button
+                className="primary-action"
+                type="button"
+                onClick={() => {
+                  if (playFlowSteps[playFlowStep].id === 'ranking') {
+                    enterRankingMode();
+                    return;
+                  }
+                  navigateToScreen(playFlowSteps[playFlowStep].id);
+                }}
+              >
+                {playFlowSteps[playFlowStep].buttonLabel}
+              </button>
               <button className="secondary-action" type="button" onClick={() => navigateToScreen('hostPanel')}>Panel host</button>
               <button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>Panel show</button>
               <button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>Panel participantes</button>
@@ -3591,7 +3737,7 @@ function App() {
             </div>
             <div className="show-intro-card">
               <span>Arranque</span>
-              <strong>5s</strong>
+              <strong>{groupIntroCountdown > 0 ? `${groupIntroCountdown}s` : 'Al aire'}</strong>
             </div>
           </div>
           <p className="brand-subtitle">Arranca solo y después pasa al panel de duelo.</p>
@@ -3630,7 +3776,7 @@ function App() {
         <section className="broadcast-card show-groups-stage">
           <div className="show-badge">GRUPOS</div>
           <h2>Tabla de grupos</h2>
-          <p>Este es el MVP de armado inicial: acomodamos a los jugadores en grupos óptimos de alrededor de 4 integrantes.</p>
+          
           <div className="show-group-stats">
             <div className="summary-card"><span>Jugadores</span><strong>{showGroupTable.totalPlayers}</strong></div>
             <div className="summary-card"><span>Grupos</span><strong>{showGroupTable.groupCount}</strong></div>
@@ -3649,7 +3795,7 @@ function App() {
                       <strong>#{String(player.playerNumber).padStart(2, '0')}</strong>
                       <span className="show-group-player-copy">
                         <strong>{player.name}</strong>
-                        <small>Puntaje total obtenido hasta ahora: {player.points}</small>
+                        <small>Puntos en grupos: {player.groupStagePoints ?? 0}</small>
                       </span>
                     </div>
                   )) : (
@@ -4132,7 +4278,7 @@ function App() {
             <div className="broadcast-metrics">
               <div><span>Grupo</span><strong>{showCurrentGroupDuel?.groupLabel ?? 'Pendiente'}</strong></div>
               <div><span>Duelo</span><strong>{showCurrentGroupDuel ? `#${showCurrentGroupDuelNumber}` : 'Pendiente'}</strong></div>
-              <div><span>Arranque</span><strong>5s</strong></div>
+              <div><span>Arranque</span><strong>{groupIntroCountdown > 0 ? `${groupIntroCountdown}s` : 'Al aire'}</strong></div>
             </div>
           </>
         ) : null}
@@ -4161,7 +4307,7 @@ function App() {
                       <strong>#{String(player.playerNumber).padStart(2, '0')}</strong>
                       <span className="show-group-player-copy">
                         <strong>{player.name}</strong>
-                        <small>Puntaje total obtenido hasta ahora: {player.points}</small>
+                        <small>Puntos en grupos: {player.groupStagePoints ?? 0}</small>
                       </span>
                     </div>
                   )) : (
@@ -4373,7 +4519,7 @@ function App() {
           <span className="machine-chip secondary">{showDuelLaunched ? `Duelo #${liveState.currentDuel}` : 'Sin duelo activo'}</span>
         </div>
         <h2>Editar puntaje del duelo</h2>
-        <p>Usá estos controles para corregir robos y respuestas correctas sin tocar el ranking general.</p>
+        <p>Estos puntos son sólo del encuentro de grupos. No impactan el ranking general.</p>
 
         <div className="score-control-grid">
           {duelCards.map(({ side, player, label }) => (
@@ -4396,7 +4542,7 @@ function App() {
               <div className="score-control-row">
                 <div className="score-control-labels">
                   <span>ROBO</span>
-                  <small>{player?.stealsWon ?? 0} robos</small>
+                  <small>Cuenta para este duelo de grupos</small>
                 </div>
                 <div className="score-control-actions">
                   <button className="secondary-action" type="button" onClick={() => adjustDuelScore(side, 'steal', 1)} disabled={!player}>+1</button>
@@ -4490,12 +4636,12 @@ function App() {
         <div className="player-theme-surface show-score-card show-score-card-a" style={getPlayerThemeSurfaceStyle(duelSeatPlayerA ?? { playerNumber: 1, themeId: duelSeatThemeA.id })}>
           <span>{duelSeatPlayerA?.name || liveState.teamNames?.playerA || 'Jugador 01'}</span>
           <strong>{liveState.scoreboard.playerA ?? 0}</strong>
-          <em>{`Robadas: ${duelSeatPlayerA?.stealsWon ?? 0}`}</em>
+          <em>{showGroupDuelMode ? 'Duelo de grupos' : `Robadas: ${duelSeatPlayerA?.stealsWon ?? 0}`}</em>
         </div>
         <div className="player-theme-surface show-score-card show-score-card-b" style={getPlayerThemeSurfaceStyle(duelSeatPlayerB ?? { playerNumber: 2, themeId: duelSeatThemeB.id })}>
           <span>{duelSeatPlayerB?.name || liveState.teamNames?.playerB || 'Jugador 02'}</span>
           <strong>{liveState.scoreboard.playerB ?? 0}</strong>
-          <em>{`Robadas: ${duelSeatPlayerB?.stealsWon ?? 0}`}</em>
+          <em>{showGroupDuelMode ? 'Duelo de grupos' : `Robadas: ${duelSeatPlayerB?.stealsWon ?? 0}`}</em>
         </div>
         <div className={`show-timer-box ${liveTimerDanger ? 'is-danger' : ''}`}><span>{liveTimerLabel}</span><strong>{liveState.timer.running ? `${liveState.timer.seconds}s` : '—'}</strong></div>
       </div>
@@ -4507,8 +4653,8 @@ function App() {
       ) : null}
       {liveState.duelFinished ? (
         <div className="question-answer-box">
-          <span>Ganador del duelo</span>
-          <strong>{liveDuelWinnerName || (liveState.duelWinnerSide ? liveState.teamNames?.[liveState.duelWinnerSide] || 'Ganador' : 'Pendiente')}</strong>
+          <span>{liveGroupDuelTied ? 'Resultado del duelo' : 'Ganador del duelo'}</span>
+          <strong>{liveGroupDuelTied ? 'EMPATE' : (liveDuelWinnerName || (liveState.duelWinnerSide ? liveState.teamNames?.[liveState.duelWinnerSide] || 'Ganador' : 'Pendiente'))}</strong>
           <p>{liveState.message}</p>
         </div>
       ) : null}
@@ -4518,12 +4664,12 @@ function App() {
           <strong>{lastDuelWinner.name}</strong>
         </div>
       ) : null}
-      {liveState.duelFinished && liveState.duelWinnerSide ? (
+      {liveState.duelFinished && (liveState.duelWinnerSide || liveGroupDuelTied) ? (
         <div className="show-victory-overlay" aria-live="polite" role="status">
           <div className="show-victory-card">
-            <span className="show-victory-kicker">¡VICTORIA!</span>
-            <strong>{liveDuelWinnerName || liveState.teamNames?.[liveState.duelWinnerSide] || 'Ganador'}</strong>
-            <p>{`${liveState.teamNames?.[liveState.duelWinnerSide] || 'El equipo'} llegó a 5 puntos.`}</p>
+            <span className="show-victory-kicker">{liveGroupDuelTied ? 'EMPATE' : '¡VICTORIA!'}</span>
+            <strong>{liveGroupDuelTied ? 'EMPATE' : (liveDuelWinnerName || liveState.teamNames?.[liveState.duelWinnerSide] || 'Ganador')}</strong>
+            <p>{liveGroupDuelTied ? 'Ambos jugadores suman 1 punto en la tabla de grupos.' : (showGroupDuelMode ? `${liveState.teamNames?.[liveState.duelWinnerSide] || 'El jugador'} suma 3 puntos en la tabla de grupos.` : `${liveState.teamNames?.[liveState.duelWinnerSide] || 'El equipo'} llegó a 5 puntos.`)}</p>
             <div className="show-victory-score">
               <span>PUNTAJE FINAL</span>
               <strong>{`${liveState.scoreboard.playerA ?? 0} - ${liveState.scoreboard.playerB ?? 0}`}</strong>
@@ -4613,6 +4759,7 @@ function App() {
         {showFlowStep === 'groups' ? (
           <>
             <button className="primary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Comenzar duelo</button>
+            <button className="secondary-action" type="button" onClick={startGroupDuel} disabled={!showCurrentGroupDuel}>Siguiente duelo</button>
             <button className="secondary-action" type="button" onClick={reshuffleGroupTable}>Re-shufflear grupos</button>
           </>
         ) : null}
@@ -4696,37 +4843,23 @@ function App() {
           <p className="sponsor-line">HOST</p>
           <h1 className="play-title">Panel de control</h1>
         </div>
-        <div className="cta-panel">
-          <div className="host-menu-container">
-            <button 
-              className="icon-button host-menu-button" 
-              type="button" 
-              onClick={() => setHostMenuOpen(!hostMenuOpen)}
-              aria-label="Menú"
-            >
-              {hostMenuOpen ? '×' : ' '}
-            </button>
-            {hostMenuOpen && (
-              <div className="host-menu-dropdown">
-                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('playOptions'); setHostMenuOpen(false); }}>
-                  Setup
-                </button>
-                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('showPanel'); setHostMenuOpen(false); }}>
-                  Show
-                </button>
-                <button className="host-menu-item" type="button" onClick={() => { navigateToScreen('playersPanel'); setHostMenuOpen(false); }}>
-                  Participantes
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
       <div className="broadcast-connection">
         <span className={`machine-chip ${liveConnection === 'connected' ? '' : 'secondary'}`}>Servidor {liveConnection}</span>
         <span className="machine-chip secondary">{liveState.connectedClients} clientes</span>
         <span className="machine-chip secondary">Duelo #{liveState.currentDuel}</span>
         <span className="machine-chip secondary">{questionBankStatus || 'Banco privado local'}</span>
+      </div>
+      <div className="host-shortcuts-box">
+        <div className="host-shortcuts-head">
+          <span className="machine-chip secondary">ACCESOS RAPIDOS</span>
+          <span className="host-shortcuts-note">Siempre visibles para el host</span>
+        </div>
+        <div className="host-shortcuts-grid">
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playOptions')}>Setup</button>
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('showPanel')}>Show</button>
+          <button className="secondary-action" type="button" onClick={() => navigateToScreen('playersPanel')}>Participantes</button>
+        </div>
       </div>
       {!showDuelLaunched ? (
         <div className="broadcast-grid host-grid">
@@ -4827,7 +4960,10 @@ function App() {
                 <button className="secondary-action action-danger" type="button" onClick={() => dispatchLiveAction({ type: 'MARK_RESPONSE_WRONG', side: hostActiveAnswerSide ?? liveTurnSide })} disabled={!hostCanJudgeAnswer}>Respuesta incorrecta</button>
               </div>
               <button className="secondary-action host-next-question" type="button" onClick={prepareNextLiveQuestion} disabled={!nextPlayableQuestion || hostMustAdvanceDuel || (liveState.currentQuestionId !== null && !hostCanAdvanceUnansweredQuestion)}>Siguiente pregunta</button>
-              <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
+              <div className="host-action-row">
+                <button className="secondary-action" type="button" onClick={applyDuelResultAndRotate} disabled={!liveState.duelFinished}>Siguiente duelo</button>
+                <button className="secondary-action" type="button" onClick={returnGroupDuelToTable} disabled={!showGroupDuelMode || !liveState.duelFinished}>Volver a la tabla de grupos</button>
+              </div>
             </div>
             <div className="broadcast-note">
               <strong>Estado:</strong>
